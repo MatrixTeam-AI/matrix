@@ -37,11 +37,13 @@ import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 from stage3.cogvideox.pipelines import CogVideoXStreamingPipeline
 from stage3.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage3.cogvideox.scheduler import CogVideoXSwinDPMScheduler
 from stage3.cogvideox.xfuser.attention_processor import (
     xFuserCogVideoXAttnProcessor2_0,
     xFuserCogVideoXControlAttnProcessor2_0
 )
+from stage3.cogvideox.parallel_vae_utils import VAEParallelState
 
 def generate_random_control_signal(
         length, seed, repeat_lens=[2, 2, 2], signal_choices=['D', 'DR', 'DL'],
@@ -85,14 +87,28 @@ def init_pipeline(
     enable_model_cpu_offload: bool = False,
     enable_tiling: bool = True,
     enable_slicing: bool = True,
+    parallel_decoding_idx: int = -1,
 ):
     transformer = CogVideoXTransformer3DModel.from_pretrained(
         transformer_path or os.path.join(model_path, "transformer"),
         torch_dtype=dtype,
         low_cpu_mem_usage=False
     )
-    scheduler = CogVideoXSwinDPMScheduler.from_config(os.path.join(model_path, "scheduler"), timestep_spacing="trailing")
-    pipe = CogVideoXStreamingPipeline.from_pretrained(model_path, transformer=transformer, scheduler=scheduler, torch_dtype=dtype)
+    vae = AutoencoderKLCogVideoX.from_pretrained(
+        os.path.join(model_path, "vae"),
+        torch_dtype=dtype,
+    )
+    scheduler = CogVideoXSwinDPMScheduler.from_config(
+        os.path.join(model_path, "scheduler"), 
+        timestep_spacing="trailing"
+    )
+    pipe = CogVideoXStreamingPipeline.from_pretrained(
+        model_path, 
+        transformer=transformer, 
+        vae=vae,
+        scheduler=scheduler, 
+        torch_dtype=dtype
+    )
 
     # If you're using with lora, add this code
     if lora_path:
@@ -117,6 +133,9 @@ def init_pipeline(
 
     if enable_slicing:
         pipe.vae.enable_slicing()
+
+    if parallel_decoding_idx > -1:
+        pipe.vae.enable_parallel_decoding(parallel_decoding_idx)
 
     return pipe
 
@@ -266,6 +285,7 @@ def main():
     add_argument_overridable(parser, "--init_video_clip_frame", type=int, default=17, help="Frame number of init_video to be clipped, should be 4n+1")
     # parallel arguments
     add_argument_overridable(parser, "--split_text_embed_in_sp", type=str, default="true", choices=["true", "false", "auto"], help="Whether to split text embed `encoder_hidden_states` for sequence parallel.")
+    add_argument_overridable(parser, "--parallel_decoding_idx", type=int, default=-1, choices=[-1, 0, 1, 2, 3], help="Upblock index in VAE.decoder to enable parallel decoding. -1 means disabling parallel decoding.")
     args = parser.parse_args()
     engine_args = xFuserArgs.from_cli_args(args)
 
@@ -288,11 +308,14 @@ def main():
         enable_model_cpu_offload=args.enable_model_cpu_offload,
         enable_tiling=args.enable_tiling,
         enable_slicing=args.enable_slicing,
+        parallel_decoding_idx=args.parallel_decoding_idx,
     )
     
     parameter_peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
 
     initialize_runtime_state(pipe, engine_config)
+    if args.parallel_decoding_idx >= 0:
+        VAEParallelState.initialize(vae_group=get_world_group().device_group)
     split_text_embed_in_sp = {
         "true": True,
         "false": False,
@@ -349,16 +372,21 @@ def main():
     elapsed_time = end_time - start_time
     peak_memory = torch.cuda.max_memory_allocated(device=f"cuda:{local_rank}")
 
+    with torch.no_grad():
+        start_time = time.time()
+        output = pipe.decode_latents(output, sliced_decode=True)
+        output = pipe.video_processor.postprocess_video(video=output, output_type="pil")[0]
+        end_time = time.time()
+        dec_elapsed_time = end_time - start_time
+
     if is_dp_last_group():
-        with torch.no_grad():
-            output = pipe.decode_latents(output, sliced_decode=True)
-            output = pipe.video_processor.postprocess_video(video=output, output_type="pil")[0]
 
         parallel_info = (
             f"dp{engine_args.data_parallel_degree}_cfg{engine_config.parallel_config.cfg_degree}_"
             f"ulysses{engine_args.ulysses_degree}_ring{engine_args.ring_degree}_"
-            f"tp{engine_args.tensor_parallel_degree}_"
-            f"pp{engine_args.pipefusion_parallel_degree}_patch{engine_args.num_pipeline_patch}"
+            # f"tp{engine_args.tensor_parallel_degree}_"
+            # f"pp{engine_args.pipefusion_parallel_degree}_patch{engine_args.num_pipeline_patch}"
+            f"parallelVAEIdx{args.parallel_decoding_idx}"
         )
         resolution = f"{input_config.width}x{input_config.height}"
 
@@ -368,7 +396,7 @@ def main():
         print(f"output saved to {output_path}")
 
     if get_world_group().rank == get_world_group().world_size - 1:
-        print(f"epoch time: {elapsed_time:.2f} sec, parameter memory: {parameter_peak_memory/1e9:.2f} GB, memory: {peak_memory/1e9} GB")
+        print(f"epoch time: {elapsed_time:.2f} sec, dec time: {dec_elapsed_time} sec parameter memory: {parameter_peak_memory/1e9:.2f} GB, memory: {peak_memory/1e9} GB")
     get_runtime_state().destory_distributed_env()
 
 

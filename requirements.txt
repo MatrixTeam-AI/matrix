@@ -16,4 +16,4 @@ deepspeed
 opencv-python
 imageio
 easydict
-xfuser==0.4.1
+xfuser==0.4.2

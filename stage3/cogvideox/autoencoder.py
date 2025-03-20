@@ -13,12 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, Optional, Tuple, Union
+from typing import Dict, Optional, Tuple, Union, List
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.modules.utils import _triple
 
 from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
@@ -31,10 +33,29 @@ from diffusers.models.autoencoders.vae import DecoderOutput, DiagonalGaussianDis
 
 from .downsampling import CogVideoXDownsample3D
 from .upsampling import CogVideoXUpsample3D
-
+from .parallel_vae_utils import VAEParallelState, Patchify, DePatchify
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
+def _adjust_padding_for_patch(padding, rank, world_size, ndim=3):
+    r"""In 2d/3d case, padding is a tuple of 4/6 integers:
+    [
+        (width) padding_left, padding_right,
+        (height)padding_top, padding_bottom,
+        [3d only] (depth) padding_front, padding_back
+    ]
+    Reference: torch.nn.functional.pad
+    """
+    if isinstance(padding, tuple):
+        padding = list(padding)
+    elif isinstance(padding, int):
+        padding = [padding] * (2 * ndim)
+
+    if rank != world_size - 1:
+        padding[1] = 0
+    if rank != 0:
+        padding[0] = 0
+    return tuple(padding)
 
 class CogVideoXSafeConv3d(nn.Conv3d):
     r"""
@@ -45,6 +66,9 @@ class CogVideoXSafeConv3d(nn.Conv3d):
         memory_count = (
             (input.shape[0] * input.shape[1] * input.shape[2] * input.shape[3] * input.shape[4]) * 2 / 1024**3
         )
+        if VAEParallelState.is_split():
+            assert memory_count <= 2
+            return self._parallel_forward(input)
 
         # Set to 2GB, suitable for CuDNN
         if memory_count > 2:
@@ -66,6 +90,173 @@ class CogVideoXSafeConv3d(nn.Conv3d):
         else:
             return super().forward(input)
 
+    def _parallel_forward(self, input: torch.Tensor) -> torch.Tensor:
+        shape_before_conv = input.shape
+        # prepare parameters
+        weight, bias = self.weight, self.bias
+        bs, channels, f, h, w = input.shape
+        group_world_size, global_rank, rank_in_group, local_rank, vae_group = (
+            VAEParallelState.get_group_world_size(),
+            VAEParallelState.get_global_rank(),
+            VAEParallelState.get_rank_in_vae_group(),
+            VAEParallelState.get_local_rank(),
+            VAEParallelState.get_vae_group(),
+        )
+
+        # special case when group_world_size == 1
+        if group_world_size == 1:
+            return super().forward(input)
+            
+        # 1. get the meta data of input tensor and conv operation
+        patch_width_list = [
+            torch.zeros(1, dtype=torch.int64, device=f"cuda:{local_rank}") 
+            for _ in range(group_world_size)
+        ]
+        dist.all_gather(
+            patch_width_list, 
+            torch.tensor([w], dtype=torch.int64, device=f"cuda:{local_rank}"),
+            group=vae_group,
+        )
+        patch_width_index = self._calc_patch_width_index(patch_width_list)
+        halo_width = self._calc_halo_width_in_w_dim(
+            rank_in_group, group_world_size, patch_width_index,
+            self.kernel_size[-1], self.padding[-1], self.stride[-1]
+        )
+
+        prev_right_halo_width: int = 0
+        next_left_halo_width: int = 0
+        if rank_in_group != 0:
+            prev_right_halo_width = self._calc_right_halo_width(
+                rank_in_group - 1, group_world_size, patch_width_index,
+                self.kernel_size[-1], self.padding[-1], self.stride[-1]
+            )
+        if rank_in_group != group_world_size - 1:
+            next_left_halo_width = self._calc_left_halo_width(
+                rank_in_group + 1, group_world_size, patch_width_index, 
+                self.kernel_size[-1], self.padding[-1], self.stride[-1]
+            )
+            next_left_halo_width = max(0, next_left_halo_width)
+
+        assert halo_width[0] <= w and halo_width[1] <= w, "halo width is not larger than the width of input tensor"
+
+        # 2. send and receive the halo region from other ranks
+        to_next = None
+        to_prev = None
+        left_halo_recv = None
+        right_halo_recv = None
+        global_rank_of_next, global_rank_of_prev  = None, None
+        # send right halo region to right patch
+        if next_left_halo_width > 0:
+            right_halo_send = input[:, :, :, :, -next_left_halo_width : ].contiguous()
+            global_rank_of_next = VAEParallelState.get_global_rank_from_group_rank(rank_in_group + 1)
+            to_next = dist.isend(right_halo_send, global_rank_of_next, group=vae_group)
+            
+        # receive left halo region from left patch
+        if halo_width[0] > 0:
+            assert patch_width_index[rank_in_group] - halo_width[0] >= patch_width_index[rank_in_group - 1], \
+                "width of left halo region is not larger than the width of input tensor of last rank"
+            left_halo_recv = torch.empty([bs, channels, f, h, halo_width[0]], dtype=input.dtype, device=f"cuda:{local_rank}")
+            global_rank_of_prev = VAEParallelState.get_global_rank_from_group_rank(rank_in_group - 1)
+            dist.recv(left_halo_recv, global_rank_of_prev, group=vae_group)
+
+        # wait for the communication to finish
+        if to_next is not None:
+            to_next.wait()
+
+        # send left halo region to left patch
+        if prev_right_halo_width > 0:
+            left_halo_send = input[:, :, :, :, : prev_right_halo_width].contiguous()
+            if global_rank_of_prev is None:
+                global_rank_of_prev = VAEParallelState.get_global_rank_from_group_rank(rank_in_group - 1)
+            to_prev = dist.isend(left_halo_send, global_rank_of_prev, group=vae_group)
+        
+        # receive right halo region from right patch
+        if halo_width[1] > 0:
+            assert patch_width_index[rank_in_group + 1] + halo_width[1] < patch_width_index[rank_in_group + 2], \
+                "width of right halo region is not larger than the width of input tensor of next rank"
+            right_halo_recv = torch.empty([bs, channels, f, h, halo_width[1]], dtype=input.dtype, device=f"cuda:{local_rank}")
+            if global_rank_of_next is None:
+                global_rank_of_next = VAEParallelState.get_global_rank_from_group_rank(rank_in_group + 1)
+            dist.recv(right_halo_recv, global_rank_of_next, group=vae_group)
+
+        # wait for the communication to finish
+        if to_prev is not None:
+            to_prev.wait()
+
+        # Remove redundancy at the top of the input
+        if halo_width[0] < 0:
+            input = input[:, :, :, :, -halo_width[0]:]
+        # concat the halo region to the input tensor            
+        if left_halo_recv is not None:
+            input = torch.cat([left_halo_recv, input], dim=-1)
+        if right_halo_recv is not None:
+            input = torch.cat([input, right_halo_recv], dim=-1)
+
+        # 3. do convolution
+        conv_res: torch.Tensor
+        padding = _adjust_padding_for_patch(self._reversed_padding_repeated_twice, rank=rank_in_group, world_size=group_world_size)
+        padding_mode = 'constant' if self.padding_mode == 'zeros' else self.padding_mode
+        conv_res = F.conv3d(
+            F.pad(input, padding, mode=padding_mode),
+            weight, bias, self.stride,
+            _triple(0), self.dilation, self.groups,
+        )
+        # print(
+        #     f"==========[rank{rank_in_group} - after conv]==========\n"
+        #     f"{shape_before_conv = }, {input.shape = }, {weight.shape = }, {conv_res.shape = }\n"
+        #     f"{padding=}, {padding_mode=}, {self.stride=}, {self.dilation=}, {self.groups=}"
+        # )
+        return conv_res
+
+    def _calc_patch_width_index(self, patch_width_list: List[torch.Tensor]):
+        width_index = []
+        cur = 0
+        for t in patch_width_list:
+            width_index.append(cur)
+            cur += t.item()
+        width_index.append(cur)
+        return width_index
+
+    def _calc_halo_width_in_w_dim(self, rank, world_size, width_index, kernel_size, padding = 0, stride = 1):
+        ''' 
+            Calculate the width of halo region in width dimension. 
+            The halo region is the region that is used for convolution but not included in the output.
+            return value: (left_halo_width, right_halo_width)
+        '''
+        halo_width = [
+            self._calc_left_halo_width(rank, world_size, width_index, kernel_size, padding, stride),
+            self._calc_right_halo_width(rank, world_size, width_index, kernel_size, padding, stride)
+        ]
+        if rank == 0:
+            halo_width[0] = 0
+        if rank == world_size - 1:
+            halo_width[1] = 0
+        return tuple(halo_width)
+
+    def _calc_left_halo_width(self, rank, world_size, width_index, kernel_size, padding = 0, stride = 1):
+        assert rank >= 0, "rank should not be smaller than 0"
+        assert rank < len(width_index) - 1, "rank should be smaller than the length of width_index - 1"
+        assert padding >= 0, "padding should not smaller than 0"
+        assert stride > 0, "stride should be larger than 0"
+
+        if rank == 0:
+            return 0
+        nstep_before_left = (width_index[rank] + padding - (kernel_size - 1) // 2 + stride - 1) // stride
+        left_halo_width = width_index[rank] - (nstep_before_left * stride - padding)
+        return left_halo_width
+
+    def _calc_right_halo_width(self, rank, world_size, width_index, kernel_size, padding = 0, stride = 1):
+        assert rank >= 0, "rank should not be smaller than 0"
+        assert rank < len(width_index) - 1, "rank should be smaller than the length of width_index - 1"
+        assert padding >= 0, "padding should not smaller than 0"
+        assert stride > 0, "stride should be larger than 0"
+
+        if rank == world_size - 1:
+            return 0
+        nstep_before_right = (width_index[rank + 1] + padding - (kernel_size - 1) // 2 + stride - 1) // stride
+        assert nstep_before_right > 0, "`nstep_before_right` should be larger than 0"
+        right_halo_width =  (nstep_before_right - 1) * stride + kernel_size - padding - width_index[rank + 1]
+        return max(0, right_halo_width)
 
 class CogVideoXCausalConv3d(nn.Module):
     r"""A 3D causal convolution layer that pads the input tensor to ensure causality in CogVideoX Model.
@@ -130,8 +321,21 @@ class CogVideoXCausalConv3d(nn.Module):
     def forward(self, inputs: torch.Tensor, conv_cache: Optional[torch.Tensor] = None) -> torch.Tensor:
         inputs = self.fake_context_parallel_forward(inputs, conv_cache)
         conv_cache = inputs[:, :, -self.time_kernel_size + 1 :].clone()
-
+        # padding_2d is a tuple of 4 integers: 
+        # (padding_left, padding_right, padding_top, padding_bottom)
         padding_2d = (self.width_pad, self.width_pad, self.height_pad, self.height_pad)
+        # [parallel decoding] adjust padding
+        if VAEParallelState.is_split():
+            group_world_size, rank_in_group = (
+                VAEParallelState.get_group_world_size(),
+                VAEParallelState.get_rank_in_vae_group(),
+            )
+            padding_2d = _adjust_padding_for_patch(
+                padding_2d,
+                rank_in_group,
+                group_world_size,
+                ndim=2,
+            )
         inputs = F.pad(inputs, padding_2d, mode="constant", value=0)
 
         output = self.conv(inputs)
@@ -917,6 +1121,11 @@ class CogVideoXDecoder3D(nn.Module):
             reversed_block_out_channels[-1], out_channels, kernel_size=3, pad_mode=pad_mode
         )
 
+        # [parallel decoding] modules for parallel decoding
+        self.patch = Patchify()
+        self.depatch = DePatchify()
+        self.upblock_idx_to_enable_parallel_decoding = -1
+
         self.gradient_checkpointing = False
 
     def forward(
@@ -967,6 +1176,14 @@ class CogVideoXDecoder3D(nn.Module):
 
             # 2. Up
             for i, up_block in enumerate(self.up_blocks):
+                # [parallel decoding] Split both `hidden_states` across multiple GPUs
+                if (
+                    i == self.upblock_idx_to_enable_parallel_decoding
+                    and VAEParallelState.is_initialized()
+                ):
+                    hidden_states = self.patch(hidden_states)
+                    sample = self.patch(sample)
+                    VAEParallelState.set_split_state(True)
                 conv_cache_key = f"up_block_{i}"
                 hidden_states, new_conv_cache[conv_cache_key] = up_block(
                     hidden_states, temb, sample, conv_cache=conv_cache.get(conv_cache_key)
@@ -978,6 +1195,11 @@ class CogVideoXDecoder3D(nn.Module):
         )
         hidden_states = self.conv_act(hidden_states)
         hidden_states, new_conv_cache["conv_out"] = self.conv_out(hidden_states, conv_cache=conv_cache.get("conv_out"))
+
+        # [parallel decoding] Gather both `hidden_states` across multiple GPUs
+        if VAEParallelState.is_split():
+            hidden_states = self.depatch(hidden_states)
+            VAEParallelState.set_split_state(False)
 
         return hidden_states, new_conv_cache
 
@@ -1168,6 +1390,22 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         """
         self.use_slicing = True
 
+    def enable_parallel_decoding(self, idx=0) -> None:
+        r"""
+        Enable parallel decoding. `idx` sets the upblock index in decoder to start parallel decoding.
+        """
+        self.decoder.upblock_idx_to_enable_parallel_decoding = idx
+
+    def disable_parallel_decoding(self) -> None:
+        r"""
+        Disable parallel decoding.
+        """
+        self.decoder.upblock_idx_to_enable_parallel_decoding = -1
+
+    @property
+    def use_parallel_decoding(self) -> bool:
+        return self.decoder.upblock_idx_to_enable_parallel_decoding >= 0
+        
     def disable_slicing(self) -> None:
         r"""
         Disable sliced VAE decoding. If `enable_slicing` was previously enabled, this method will go back to computing
@@ -1233,6 +1471,7 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         batch_size, num_channels, num_frames, height, width = z.shape
 
         if self.use_tiling and (width > self.tile_latent_min_width or height > self.tile_latent_min_height):
+            assert not VAEParallelState.is_initialized(), "Tiling is not supported in parallel decoding."
             return self.tiled_decode(z, return_dict=return_dict)
 
         frame_batch_size = self.num_latent_frames_batch_size

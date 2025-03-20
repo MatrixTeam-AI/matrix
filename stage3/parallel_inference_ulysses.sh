@@ -35,8 +35,8 @@ export NCCL_MAX_NCHANNELS=64
 # Uncomment and modify these as needed
 # PIPEFUSION_ARGS="--num_pipeline_patch 8"
 # OUTPUT_ARGS="--output_type latent"
-# PARALLLEL_VAE="--use_parallel_vae"
-ENABLE_TILING="--enable_tiling"
+PARALLLEL_VAE="--parallel_decoding_idx 0"
+# ENABLE_TILING="--enable_tiling"
 # COMPILE_FLAG="--use_torch_compile"
 
 torchrun --nproc_per_node=$N_GPUS ./$SCRIPT \
