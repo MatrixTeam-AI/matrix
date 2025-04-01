@@ -36,7 +36,7 @@ from diffusers.utils import export_to_video
 import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
-from pipeline_cogvideox_interactive  import InteractiveCogVideoXStreamingPipeline
+from pipeline_cogvideox_interactive  import CogVideoXInteractiveStreamingPipeline
 from stage3.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage3.cogvideox.scheduler import CogVideoXSwinDPMScheduler
@@ -99,7 +99,7 @@ def init_pipeline(
         os.path.join(model_path, "scheduler"), 
         timestep_spacing="trailing"
     )
-    pipe = InteractiveCogVideoXStreamingPipeline.from_pretrained(
+    pipe = CogVideoXInteractiveStreamingPipeline.from_pretrained(
         model_path, 
         transformer=transformer, 
         vae=vae,
@@ -250,11 +250,6 @@ def main():
     add_argument_overridable(parser, "--num_videos_per_prompt", type=int, default=1, help="Number of videos to generate per prompt")
     add_argument_overridable(parser, "--dtype", type=str, default="bfloat16", help="The data type for computation")
     add_argument_overridable(parser, "--seed", type=int, default=42, help="The seed for reproducibility")
-    # control arguments
-    add_argument_overridable(parser, "--control_signal", type=str, required=True, help="control signal of original video (and can be longer which contains the control signal of video to be generated).")
-    add_argument_overridable(parser, "--control_signal_type", type=str, choices=["raw", "downsampled"], default="downsampled", help="Whether the control signal is recorded in video raw fps or downsampled fps (i.e. 4 fps), if raw, its length >= init_video_clip_frame.")
-    add_argument_overridable(parser, "--control_seed", type=int, default=42, help="The seed for reproducibility")
-    add_argument_overridable(parser, "--control_repeat_length", type=int, default=2, help="The minimal length of one control signal.")
     # swin arguments
     add_argument_overridable(parser, "--num_noise_groups", type=int, default=4, help="Number of noise groups")
     add_argument_overridable(parser, "--num_sample_groups", type=int, default=8, help="Number of sampled videos groups")
@@ -273,6 +268,7 @@ def main():
     assert engine_config.runtime_config.use_torch_compile is False, "`use_torch_compile` is not supported yet."
 
     dtype = torch.float16 if args.dtype == "float16" else torch.bfloat16
+    assert not args.enable_tiling and not args.enable_slicing, "Tiling and slicing are not supported yet."
     pipe = init_pipeline(
         model_path=args.model_path,
         transformer_path=args.transformer_path,
@@ -323,7 +319,7 @@ def main():
     torch.cuda.reset_peak_memory_stats()
 
     start_time = time.time()
-    output = generate_video(
+    generate_video(
         prompt=args.prompt,
         pipe=pipe,
         num_frames=args.num_frames,
@@ -335,14 +331,9 @@ def main():
         num_videos_per_prompt=args.num_videos_per_prompt,
         seed=args.seed,
         fps=args.fps,
-        control_signal=args.control_signal,
-        control_signal_type=args.control_signal_type,
-        control_seed=args.control_seed,
-        control_repeat_length=args.control_repeat_length,
         num_sample_groups=args.num_sample_groups,
         num_noise_groups=args.num_noise_groups,
         init_video_clip_frame=args.init_video_clip_frame,
-        output_type = "latent",
     )
     end_time = time.time()
     elapsed_time = end_time - start_time

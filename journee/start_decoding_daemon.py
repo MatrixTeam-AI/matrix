@@ -21,11 +21,6 @@ def debug_daemon(
     vae_parallel_size: int = 1,
     post_parallel_size: int = 0,
 ):
-    if post_parallel_size > 0:
-        assert (
-            isinstance(frame_interpolator_model_path, str) 
-            and os.path.isdir(frame_interpolator_model_path)
-        ), "Frame interpolator model path should be a directory."
     if export_video_for_debug:
         assert (
             isinstance(video_output_dir, str) 
@@ -104,12 +99,6 @@ def new_daemon(
     vae_parallel_size: int = 1,
     post_parallel_size: int = 0,
 ):
-    if post_parallel_size > 0:
-        assert (
-            isinstance(frame_interpolator_model_path, str) 
-            and os.path.isdir(frame_interpolator_model_path)
-        ), "Frame interpolator model path should be a directory."
-
     # init_ray()
     
     dist_env_var = {

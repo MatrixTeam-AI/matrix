@@ -59,6 +59,7 @@ class ParallelVAEWrapper:
         vae,
     ):
         self.vae = vae
+        self.video_processor = VideoProcessor(vae_scale_factor=8)
     
     @torch.no_grad()
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
@@ -69,7 +70,15 @@ class ParallelVAEWrapper:
         assert latents.device == self.vae.device
         latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_frames, num_channels, height, width]
         latents = 1 / vae_scaling_factor_image * latents
-        frames = self.vae.decode(latents).sample
+        frames = self.vae.decode(latents, keep_cache=True).sample
+        # post process
+        assert frames.shape[0] == 1, "Batch size should be 1"
+        frames = self.video_processor.postprocess(
+            frames[0].permute(1, 0, 2, 3), # [C, F, H ,W] -> [F, C, H, W]
+            output_type="pt",
+        )
+        # [F, C, H, W] -> [F, H, W, C] and denormalize
+        frames = (frames.permute(0, 2, 3, 1).float() * 255).to(torch.uint8)
         return frames
 
     def execute(self, **kwargs):
@@ -160,9 +169,9 @@ class ParallelVAEWorker(WorkerBase):
         device = torch.device(f"cuda:{local_rank}")
         vae_parallel_size = self.parallel_config.vae_parallel_size
         if vae_parallel_size == 1:
-            print("vae_parallel_size == 1")
+            print("[ParallelVAEWorker.get_latents] vae_parallel_size == 1")
             latents = ray.get(self.recv_dit2vae_queue_manager.get.remote())
-            print(f"Rank {global_rank} received the latents")
+            print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the latents")
             latents = latents.to(dtype=dtype, device=device)
             return latents
         else:
@@ -191,14 +200,14 @@ class ParallelVAEWorker(WorkerBase):
         return latents
     
     def send_frames(self, frames):
-        print(f"Rank {self.rank} is sending the frames")
+        print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} is sending the frames")
         assert self.rank == self.parallel_config.dit_parallel_size
         if self.rank == self.parallel_config.dit_parallel_size:
             assert hasattr(self, 'send_vae2post_queue_manager'), "send_vae2post_queue_manager is not defined on the first vae worker"
             frames = frames.to(torch.device('cpu'))  # move the frames to CPU before sending via ray
-            print("frames shape: ", frames.shape)
+            print("[ParallelVAEWorker.send_frames] frames shape: ", frames.shape)
             ray.get(self.send_vae2post_queue_manager.put.remote(frames))
-            print(f"Rank {self.rank} sent the frames")
+            print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} sent the frames")
             
     def background_loop(self, **kwargs):
         self.connect_pipeline()
@@ -218,7 +227,7 @@ class ParallelVAEWorker(WorkerBase):
             # =====================================================================
             # All workers process the same latents and produce the same frames (communication is automatically handled in the forward within the vae group)
             frames = self.execute(latents=latents)
-            print("frames shape: ", frames.shape)
+            print("[ParallelVAEWorker.background_loop] frames shape: ", frames.shape)
             # Only the first worker will send the frames to the postprocessor queue  
             self.send_frames(frames)
 
@@ -254,9 +263,9 @@ class PostProcessorWorker(WorkerBase):
         if not hasattr(self, 'recv_vae2post_queue_manager'):
             # receive data from dit2vae_latents_queue
             self.recv_vae2post_queue_manager = ray.get_actor("vae2post_queue", namespace='matrix')
-        if not hasattr(self, 'send_post2web_queue_manager'):
+        if not hasattr(self, 'send_post2front_queue_manager'):
             # send data to vae2post_latents_queue
-            self.send_post2web_queue_manager = ray.get_actor("post2web_queue", namespace='matrix') 
+            self.send_post2front_queue_manager = ray.get_actor("post2front_queue", namespace='matrix') 
         
     def from_pretrained(
         self, 
@@ -266,7 +275,7 @@ class PostProcessorWorker(WorkerBase):
         print("from_pretrained of PostProcessorWorker")
         # init frame interpolator
         frame_interpolator_model_path = kwargs.get('frame_interpolator_model_path', None)
-        assert frame_interpolator_model_path is not None, "Frame interpolator model path is not provided"
+        self.frame_interpolator = None
         local_rank = get_world_group().local_rank
         if frame_interpolator_model_path:
             frame_interpolator = RIFEInterpolator(model_path=frame_interpolator_model_path)
@@ -284,6 +293,8 @@ class PostProcessorWorker(WorkerBase):
         return
 
     def frame_interpolation(self, frame_list):
+        raise NotImplementedError("Interpolation for frame in `np.array` format is not implemented yet")
+        # TODO: Now different section use PIL image list as intermediate result dtype, but journee needs `np.array` in np.uint8 for display
         # TODO: Implement more efficient frame interpolation using NVIDIA FRUC
         interpolated_frame_list = self.frame_interpolator.interpolate(frame_list, multi=4)
         return interpolated_frame_list
@@ -292,13 +303,14 @@ class PostProcessorWorker(WorkerBase):
         # TODO: Implement super resolution
         return frame_list
     
-    def postprocess(self, pil_image_list):
+    def postprocess(self, frame_list):
         # postprocess the images (e.g. super resolution, frame interpolation)
-        pil_image_list = self.frame_interpolation(pil_image_list)
-        # print("interpolated image list: ", pil_image_list)
-        pil_image_list = self.super_resolution(pil_image_list)
-        # print("super resolution image list: ", pil_image_list)
-        return pil_image_list
+        if self.frame_interpolator is not None:
+            frame_list = self.frame_interpolation(frame_list)
+        # print("interpolated image list: ", frame_list)
+        frame_list = self.super_resolution(frame_list)
+        # print("super resolution image list: ", frame_list)
+        return frame_list
     
     def prepare_run(self, input_config, steps: int = 3, sync_steps: int = 1):
         # This member function cannot be left unimplemented because it is defined as an abstract method in its parent class (ABC), which requires all subclasses to implement it.
@@ -309,19 +321,19 @@ class PostProcessorWorker(WorkerBase):
         frames = kwargs.get('frames', None)
         print(frames.shape)
         assert frames is not None
-        # TODO: Now different section use PIL image list as intermediate result dtype, but journee only need pixel values for display
-        # so later video_processor could be removed and use tensor/ndarray as intermediate results (but need modification of interpolator class and ensure necessary denormalization steps)
-        image_list = self.video_processor.postprocess_video(video=frames, output_type='pil')[0]
-        print("len(image_list): ", len(image_list))
-        if self.last_image is not None:
+        # pt -> numpy -> umpy list
+        image_list = [frame for frame in frames.cpu().numpy()]
+        print(f"[PostProcessorWorker.execute] {len(image_list)=}, {image_list[0].shape=}")
+        if self.frame_interpolator is not None and self.last_image is not None:
             full_image_list = [self.last_image] + image_list
         else:
             full_image_list = image_list
         print("len(full_image_list): ", len(full_image_list))
         post_image_list = self.postprocess(full_image_list)
         print("len(post_image_list): ", len(post_image_list))
+        if self.frame_interpolator is not None and self.last_image is not None:
+            post_image_list = post_image_list[1:]
         self.last_image = post_image_list[-1]
-        post_image_list = post_image_list[1:]
         return post_image_list
     
     def background_loop(self, **kwargs):
@@ -334,8 +346,7 @@ class PostProcessorWorker(WorkerBase):
             print("PostProcessorWorker is waiting for the frames")
             frames = ray.get(self.recv_vae2post_queue_manager.get.remote())  # this should be blocking
             print("PostProcessorWorker received the frames")
-            frames = frames[:, :, 4:]  # TODO: remove this after the vae worker's cache is fixed
             post_image_list = self.execute(frames=frames)
             print("PostProcessorWorker is sending the post-processed images, len(post_image_list): ", len(post_image_list))
-            ray.get(self.send_post2web_queue_manager.put.remote(post_image_list))  # this could be non-blocking
-    
+            for image in post_image_list:
+                self.send_post2front_queue_manager.put.remote(image)  # this could be non-blocking

@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import sys
 import inspect
 import math
@@ -816,7 +817,7 @@ def retrieve_latents(
         raise AttributeError("Could not access latents of provided encoder_output")
 
 
-class InteractiveCogVideoXStreamingPipeline(CogVideoXPipeline):
+class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
     def __init__(
         self,
         tokenizer: T5Tokenizer,
@@ -841,7 +842,7 @@ class InteractiveCogVideoXStreamingPipeline(CogVideoXPipeline):
         self.init_action = 'D'
         self.model_input_actions = []
         self.control_signal_to_idx = {k: i for i, k in enumerate(CONTROL_SIGNAL_TO_PROMPT.keys())}
-        self.idx_to_control_signal = {v : k for k, v in self.ACTION2ID.items()}
+        self.idx_to_control_signal = {v : k for k, v in self.control_signal_to_idx.items()}
 
     def init_ray_sender(self):
         if self.rank == 0:  # assert the total worker rank order is [dit_workers=M, vae_workers=N, postprocessor_worker=1], so the first worker is the dit_worker
@@ -973,15 +974,6 @@ class InteractiveCogVideoXStreamingPipeline(CogVideoXPipeline):
         del clip_model
         gc.collect()
         torch.cuda.empty_cache()
-
-    def get_control_from_signal(self, control_signal, start=None, end=None):
-        assert hasattr(self, "control_embeddings")
-        control_signal_list = control_signal.split(",")
-        if start is not None and end is not None:
-            control_signal_list = control_signal_list[start: end]
-        control_indices = [self.control_signal_to_idx[c] for c in control_signal_list]
-        control = self.control_embeddings[control_indices]
-        return control
     
     def get_control_from_signal_interactive(self, num_latent_frames, window_size):
         # TODO: Handle this in multi-gpu setting
@@ -989,10 +981,12 @@ class InteractiveCogVideoXStreamingPipeline(CogVideoXPipeline):
         if len(self.model_input_actions) == 0:  # initialize the action window for the first time
             self.model_input_actions = [self.init_action] * num_latent_frames
         else:
-            # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
-            action = self.get_current_action() 
-            
-            self.model_input_actions.extend([action] * window_size)
+            action_window = []
+            for _ in range(window_size):
+                # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
+                action = self.get_current_action()
+                action_window.append(action)
+            self.model_input_actions.extend(action_window)
             self.model_input_actions = self.model_input_actions[-num_latent_frames:]
         if self.rank:
             print(f"Current actions: {self.model_input_actions}")

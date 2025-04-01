@@ -31,18 +31,18 @@ from journee.interface import init_model
 
 WIDTH = 720
 HEIGHT = 480
-VIDEO_FPS = 16
+VIDEO_FPS = 8
 CONTROL_FPS = VIDEO_FPS // 4
 DISPLAY_FPS = 64 # determine the frequency to update frame and control signals
 
 # Pre-create the frames for default cases. 
-RED_FRAME = np.zeros((WIDTH, HEIGHT, 3), dtype=np.uint8)
+RED_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
 RED_FRAME[:,:] = [200, 99, 99]
-GREEN_FRAME = np.zeros((WIDTH, HEIGHT, 3), dtype=np.uint8)
+GREEN_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
 GREEN_FRAME[:,:] = [99, 200, 99] 
-BLUE_FRAME = np.zeros((WIDTH, HEIGHT, 3), dtype=np.uint8)
+BLUE_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
 BLUE_FRAME[:,:] = [99, 99, 200]
-WHITE_FRAME = np.zeros((WIDTH, HEIGHT, 3), dtype=np.uint8)
+WHITE_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
 WHITE_FRAME[:,:] = [200, 200, 200]
 
 def setup_logging():
@@ -137,7 +137,10 @@ class FrameManager:
             self.last_frame is None
             or self.last_frame_time >= 1 / self.video_fps
         ):
+            print(f"[main.FrameManager.get] dt: {dt:.3f}s, getting frame...")
             frame = self.frame_queue.get()  #TODO: may need to modify the interface of `frame_queue`
+            print(f"[main.FrameManager.get] Got frame!")
+            frame = frame[::-1] # flip the H dimension for wmk
             self.last_frame = frame
             self.last_frame_time = dt
         return frame
@@ -171,7 +174,7 @@ class ControlManager:
             self.last_control_time = dt
 
 def generate_frames(player: Player, dt: float):
-    global is_connected, frame_manager, control_manager
+    global is_connected, frame_manager, control_manager, frame_counter
 
     # Collect control signals A/W/D.
     # 2 ways to check if a key is pressed:
@@ -207,11 +210,15 @@ def generate_frames(player: Player, dt: float):
             frame = BLUE_FRAME
         else:
             frame = RED_FRAME
+            if frame_counter % 2:
+                frame = BLUE_FRAME
+    frame_counter += 1
     return frame
     
 def main():
-    global player, is_connected, frame_manager, control_manager
+    global player, is_connected, frame_manager, control_manager, frame_counter
     is_connected = False
+    frame_counter = 0
     logger.info('Init: Starting')
     init_messenger()
 

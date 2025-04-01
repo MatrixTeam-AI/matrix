@@ -1467,7 +1467,7 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             return (posterior,)
         return AutoencoderKLOutput(latent_dist=posterior)
 
-    def _decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
+    def _decode(self, z: torch.Tensor, return_dict: bool = True, keep_cache: bool = False) -> Union[DecoderOutput, torch.Tensor]:
         batch_size, num_channels, num_frames, height, width = z.shape
 
         if self.use_tiling and (width > self.tile_latent_min_width or height > self.tile_latent_min_height):
@@ -1479,6 +1479,8 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         conv_cache = None
         dec = []
 
+        if keep_cache and hasattr(self, "decoder_cache"):
+            conv_cache = self.decoder_cache
         for i in range(num_batches):
             remaining_frames = num_frames % frame_batch_size
             start_frame = frame_batch_size * i + (0 if i == 0 else remaining_frames)
@@ -1488,6 +1490,8 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
                 z_intermediate = self.post_quant_conv(z_intermediate)
             z_intermediate, conv_cache = self.decoder(z_intermediate, conv_cache=conv_cache)
             dec.append(z_intermediate)
+        if keep_cache:
+            self.decoder_cache = conv_cache
 
         dec = torch.cat(dec, dim=2)
 
@@ -1497,7 +1501,7 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
         return DecoderOutput(sample=dec)
 
     @apply_forward_hook
-    def decode(self, z: torch.Tensor, return_dict: bool = True) -> Union[DecoderOutput, torch.Tensor]:
+    def decode(self, z: torch.Tensor, return_dict: bool = True, keep_cache: bool = False) -> Union[DecoderOutput, torch.Tensor]:
         """
         Decode a batch of images.
 
@@ -1515,7 +1519,7 @@ class AutoencoderKLCogVideoX(ModelMixin, ConfigMixin, FromOriginalModelMixin):
             decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
             decoded = torch.cat(decoded_slices)
         else:
-            decoded = self._decode(z).sample
+            decoded = self._decode(z, keep_cache=keep_cache).sample
 
         if not return_dict:
             return (decoded,)
