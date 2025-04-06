@@ -177,6 +177,7 @@ class ParallelVAEWorker(WorkerBase):
         latents, passed_time = get_data_and_passed_time(latents)
         if passed_time is not None:
             print(f"[ParallelVAEWorker._get_latents] {passed_time=}s")
+        return latents
     
     def get_latents(self, **kwargs):
         # receive latents from DiT worker and send to all VAE worker
