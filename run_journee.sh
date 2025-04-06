@@ -9,8 +9,10 @@ cleanup() {
 
 trap cleanup SIGINT
 cd journee
-python create_ray_pipe.py &
+python create_ray_pipe.py \
+  --action_queue_maxsize 2 &
 BACK_PID_0=$!
+sleep 10
 # this will use the GPU designated by CUDA_VISIBLE_DEVICES to `ray start`
 python start_decoding_daemon.py \
   --model_path "/MODEL/PATH" \
@@ -22,5 +24,6 @@ bash start_dit.sh &
 BACK_PID_2=$!
 cd ..
 
+sleep 30
 python main.py &
 BACK_PID_3=$!

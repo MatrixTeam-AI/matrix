@@ -10,7 +10,7 @@ sudo apt-get install x11vnc
 git clone https://github.com/novnc/noVNC.git # v1.6.0
 
 # 1. Start virtual display
-Xvfb :1 -screen 0 1024x768x24 &
+Xvfb :1 -screen 0 720x480x24 &
 export DISPLAY=:1
 
 # 2. forward display to web

@@ -1,4 +1,7 @@
+import time
+
 import ray
+from .ray_pipeline_utils import add_timestamp, get_data_and_passed_time
 
 class QueueInterface:
     def __init__(
@@ -8,11 +11,22 @@ class QueueInterface:
         self.queue_ray_actor = queue_ray_actor
 
     def get(self):
-        item = ray.get(self.queue_ray_actor.get.remote())   # block
-        return item
+        item = ray.get(self.queue_ray_actor.get.remote())   # blocking
+        item, passed_time = get_data_and_passed_time(item)
+        return item, passed_time
 
     def put(self, item):
-        self.queue_ray_actor.put.remote(item)   # non-block
+        item = add_timestamp(item)
+        self.queue_ray_actor.put.remote(item)   # non-blocking
+
+    def full(self):
+        return ray.get(self.queue_ray_actor.full.remote())
+    
+    def empty(self):
+        return ray.get(self.queue_ray_actor.empty.remote())
+    
+    def size(self):
+        return ray.get(self.queue_ray_actor.qsize.remote())
 
 class DummyModel:
     def start(self):

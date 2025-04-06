@@ -8,16 +8,33 @@ import ray
 from ray.util.queue import Queue
 
 @contextmanager
-def timer(label="Block"):
+def timer(label="Block", if_print=True, print_rank=0):
     start_time = time.perf_counter()
     yield
     if torch.cuda.is_available():
         torch.cuda.synchronize()  # Ensures all CUDA operations are completed before measuring time
     end_time = time.perf_counter()
     
-    if not dist.is_initialized() or dist.get_rank() == 0:
+    if if_print and (not dist.is_initialized() or dist.get_rank() == print_rank):
         print(f"{label} took {end_time - start_time:.6f} seconds")
 
+ADD_TIMESTAMP = True
+
+def add_timestamp(data):
+    if not ADD_TIMESTAMP:
+        return data
+    start_time = time.perf_counter()
+    return dict(
+        data = data,
+        timestamp = start_time,
+    )
+
+def get_data_and_passed_time(data):
+    if not (isinstance(data, dict) and "timestamp" in data):
+        return data, None
+    end_time = time.perf_counter()
+    passed_time = end_time - data["timestamp"]
+    return data["data"], passed_time
 
 @ray.remote(num_cpus=1, max_concurrency=3)
 class QueueManager:
@@ -44,6 +61,15 @@ class QueueManager:
 
     def print_queue(self):
         print(f"[QueueManager] Current queue: {self.queue}")
+
+    def full(self):
+        return self.queue.full()
+    
+    def empty(self):
+        return self.queue.empty()
+    
+    def qsize(self):
+        return self.queue.qsize()
 
 
 @ray.remote

@@ -9,6 +9,7 @@ from itertools import islice, repeat
 from PIL import Image
 import torch
 import torch.distributed as dist
+import numpy as np
 from diffusers.video_processor import VideoProcessor
 from diffusers.utils import export_to_video, load_image, load_video
 
@@ -24,7 +25,7 @@ from xfuser.core.distributed.parallel_state import (init_distributed_environment
                                                     get_world_group,
                                                     get_vae_parallel_group)
 
-from ray_pipeline_utils import timer
+from ray_pipeline_utils import timer, add_timestamp, get_data_and_passed_time
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage3.cogvideox.parallel_vae_utils import VAEParallelState
@@ -53,6 +54,9 @@ class EngineConfig:
     # runtime_config: RuntimeConfig
     # fast_attn_config: FastAttnConfig
 
+def frames_pt_to_numpy_list(frames_pt: torch.Tensor) -> List[np.ndarray]:
+    return [frame for frame in frames_pt.cpu().numpy()]
+    
 class ParallelVAEWrapper:
     def __init__(
         self, 
@@ -106,6 +110,8 @@ class ParallelVAEWorker(WorkerBase):
         self.parallel_config = parallel_config
         self.rank = rank
         self.vae = None
+
+        self.if_send_to_front = (parallel_config.post_parallel_size == 0)
     
     def connect_pipeline(self):
         if self.rank == self.parallel_config.dit_parallel_size:  #  if dit_parallel_size is 0, then rank 0 is the default vae worker
@@ -114,7 +120,10 @@ class ParallelVAEWorker(WorkerBase):
             if not hasattr(self, 'recv_dit2vae_queue_manager'):
                 self.recv_dit2vae_queue_manager = ray.get_actor("dit2vae_queue", namespace='matrix')
             if not hasattr(self, 'send_vae2post_queue_manager'):
-                self.send_vae2post_queue_manager = ray.get_actor("vae2post_queue", namespace='matrix') 
+                if self.if_send_to_front:
+                    self.send_vae2post_queue_manager = ray.get_actor("post2front_queue", namespace='matrix')
+                else:
+                    self.send_vae2post_queue_manager = ray.get_actor("vae2post_queue", namespace='matrix') 
     
     def init_worker_distributed_environment(self):
         print("init_worker_distributed_environment of ParallelVAEWorker")
@@ -154,8 +163,20 @@ class ParallelVAEWorker(WorkerBase):
         # This member function cannot be left unimplemented because it is defined as an abstract method in its parent class (ABC), which requires all subclasses to implement it.
         return None
     
+    def post_process(self, frames_pt):
+        return frames_pt_to_numpy_list(frames_pt)
+    
     def execute(self, **kwargs):
-        return self.vae.execute(**kwargs)  # this will run `execute` of xxxWrapper
+        frames = self.vae.execute(**kwargs)  # this will run `execute` of xxxWrapper
+        if self.if_send_to_front:
+            frames = self.post_process(frames)
+        return frames
+    
+    def _get_latents(self):
+        latents = ray.get(self.recv_dit2vae_queue_manager.get.remote())
+        latents, passed_time = get_data_and_passed_time(latents)
+        if passed_time is not None:
+            print(f"[ParallelVAEWorker._get_latents] {passed_time=}s")
     
     def get_latents(self, **kwargs):
         # receive latents from DiT worker and send to all VAE worker
@@ -170,43 +191,63 @@ class ParallelVAEWorker(WorkerBase):
         vae_parallel_size = self.parallel_config.vae_parallel_size
         if vae_parallel_size == 1:
             print("[ParallelVAEWorker.get_latents] vae_parallel_size == 1")
-            latents = ray.get(self.recv_dit2vae_queue_manager.get.remote())
-            print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the latents")
+            latents = self._get_latents()
+            dit2vae_qsize = ray.get(self.recv_dit2vae_queue_manager.qsize.remote())
+            print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the latents, {dit2vae_qsize=}")
             latents = latents.to(dtype=dtype, device=device)
             return latents
         else:
             if global_rank == first_vae_worker_rank:
-                latents = ray.get(self.recv_dit2vae_queue_manager.get.remote())  # latents is on CPU
+                latents = self._get_latents()
+                dit2vae_qsize = ray.get(self.recv_dit2vae_queue_manager.qsize.remote())
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the latents, {dit2vae_qsize=}")
                 latents = latents.to(dtype=dtype, device=device)  # move to GPU
-                shape_len = torch.tensor([len(latents.shape)], dtype=torch.int, device=device)
-                shape_tensor = torch.tensor(latents.shape, dtype=torch.int, device=device)
-                
-                print(f"shape_len: {shape_len}, shape_tensor: {shape_tensor}")
-                # Broadcast data to VAE group (makes all ranks in the vae group update their tensor to match the tensor on src rank.)
-                torch.distributed.broadcast(shape_len, src=global_rank, group=get_vae_parallel_group())  # use the default group to send the data
-                torch.distributed.broadcast(shape_tensor, src=global_rank, group=get_vae_parallel_group())
+                if not hasattr(self, 'shape_tensor'):
+                    shape_len = torch.tensor([len(latents.shape)], dtype=torch.int, device=device)
+                    shape_tensor = torch.tensor(latents.shape, dtype=torch.int, device=device)
+                    
+                    print(f"[ParallelVAEWorker.get_latents] shape_len: {shape_len}, shape_tensor: {shape_tensor}")
+                    # Broadcast data to VAE group (makes all ranks in the vae group update their tensor to match the tensor on src rank.)
+                    torch.distributed.broadcast(shape_len, src=global_rank, group=get_vae_parallel_group())  # use the default group to send the data
+                    torch.distributed.broadcast(shape_tensor, src=global_rank, group=get_vae_parallel_group())
+                    self.shape_tensor = shape_tensor
                 torch.distributed.broadcast(latents, src=global_rank, group=get_vae_parallel_group())
-                print(f"Rank {global_rank} is broadcasting the latents")
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is broadcasting the latents")
             else:
-                print(f"Rank {global_rank} is waiting for the latents")
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is waiting for the latents")
                 # Other VAE ranks receive broadcast
-                shape_len = torch.zeros(1, dtype=torch.int, device=device)
-                torch.distributed.broadcast(shape_len, src=first_vae_worker_rank, group=get_vae_parallel_group())
-                shape_tensor = torch.zeros(shape_len[0], dtype=torch.int, device=device)
-                torch.distributed.broadcast(shape_tensor, src=first_vae_worker_rank, group=get_vae_parallel_group())
-                latents = torch.zeros(torch.Size(shape_tensor), dtype=dtype, device=device)
+                if not hasattr(self, 'shape_tensor'):
+                    shape_len = torch.zeros(1, dtype=torch.int, device=device)
+                    torch.distributed.broadcast(shape_len, src=first_vae_worker_rank, group=get_vae_parallel_group())
+                    shape_tensor = torch.zeros(shape_len[0], dtype=torch.int, device=device)
+                    torch.distributed.broadcast(shape_tensor, src=first_vae_worker_rank, group=get_vae_parallel_group())
+                    self.shape_tensor = shape_tensor
+                latents = torch.zeros(torch.Size(self.shape_tensor), dtype=dtype, device=device)
                 torch.distributed.broadcast(latents, src=first_vae_worker_rank, group=get_vae_parallel_group())
-                print(f"Rank {global_rank} is receiving the latents")
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is receiving the latents")
         return latents
     
+    def _send_frames(self, frames, blocking=True):
+        frames = add_timestamp(frames)
+        if blocking:
+            ray.get(self.send_vae2post_queue_manager.put.remote(frames))
+        else:
+            self.send_vae2post_queue_manager.put.remote(frames)
+
     def send_frames(self, frames):
         print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} is sending the frames")
         assert self.rank == self.parallel_config.dit_parallel_size
         if self.rank == self.parallel_config.dit_parallel_size:
             assert hasattr(self, 'send_vae2post_queue_manager'), "send_vae2post_queue_manager is not defined on the first vae worker"
-            frames = frames.to(torch.device('cpu'))  # move the frames to CPU before sending via ray
-            print("[ParallelVAEWorker.send_frames] frames shape: ", frames.shape)
-            ray.get(self.send_vae2post_queue_manager.put.remote(frames))
+            if torch.is_tensor(frames):
+                frames = frames.to(torch.device('cpu'))  # move the frames to CPU before sending via ray
+                print("[ParallelVAEWorker.send_frames] frames shape: ", frames.shape)
+                self._send_frames(frames, blocking=True)
+            else:
+                assert isinstance(frames, list), "frames should be a list of images in numpy array format"
+                print(f"[ParallelVAEWorker.send_frames] {len(frames)=}, {frames[0].shape=}")
+                for frame in frames:
+                    self._send_frames(frame, blocking=False)
             print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} sent the frames")
             
     def background_loop(self, **kwargs):
@@ -214,22 +255,34 @@ class ParallelVAEWorker(WorkerBase):
         latents_window = []
         while True:
             # Only the first worker will receive the latent from queue, and distribute the data to all other workers
-            latents = self.get_latents()  # every worker will receive the same latents
+            with timer(
+                label=f"[ParallelVAEWorker.background_loop] `self.get_latents`",
+                if_print=self.rank == self.parallel_config.dit_parallel_size,
+            ):
+                latents = self.get_latents()  # every worker will receive the same latents
             # ======= will be removed after the vae worker's cache is fixed =======
-            num_latents = 2
+            min_num_latents = 2
             if latents.shape[1] == 1:
                 latents_window.append(latents)
-                latents_window = latents_window[-num_latents:]
-                if len(latents_window) < num_latents:
-                    print(f"[Consumer] Not enough latents to decode")
+                if len(latents_window) < min_num_latents:
+                    print(f"[ParallelVAEWorker.background_loop] Not enough latents to decode")
                     continue
                 latents = torch.cat(latents_window, axis=1)
+                latents_window = []
             # =====================================================================
             # All workers process the same latents and produce the same frames (communication is automatically handled in the forward within the vae group)
-            frames = self.execute(latents=latents)
+            with timer(
+                label=f"[ParallelVAEWorker.background_loop] `self.execute`",
+                if_print=self.rank == self.parallel_config.dit_parallel_size,
+            ):
+                frames = self.execute(latents=latents)
             print("[ParallelVAEWorker.background_loop] frames shape: ", frames.shape)
             # Only the first worker will send the frames to the postprocessor queue  
-            self.send_frames(frames)
+            with timer(
+                label=f"[ParallelVAEWorker.background_loop] `self.send_frames`",
+                if_print=self.rank == self.parallel_config.dit_parallel_size,
+            ):
+                self.send_frames(frames)
 
 
 class PostProcessorWorker(WorkerBase):
@@ -272,7 +325,7 @@ class PostProcessorWorker(WorkerBase):
         pretrained_model_name_or_path: str,
         **kwargs
     ): 
-        print("from_pretrained of PostProcessorWorker")
+        print("[PostProcessorWorker.from_pretrained] Init models...")
         # init frame interpolator
         frame_interpolator_model_path = kwargs.get('frame_interpolator_model_path', None)
         self.frame_interpolator = None
@@ -319,34 +372,34 @@ class PostProcessorWorker(WorkerBase):
     def execute(self, **kwargs):
         # the previous last frame need to be inserted to the beginning of the new frames to do the interpolation, and being removed after postprocessing
         frames = kwargs.get('frames', None)
-        print(frames.shape)
+        print(f"[PostProcessorWorker.execute] {frames.shape=}")
         assert frames is not None
         # pt -> numpy -> umpy list
-        image_list = [frame for frame in frames.cpu().numpy()]
+        image_list = frames_pt_to_numpy_list(frames)
         print(f"[PostProcessorWorker.execute] {len(image_list)=}, {image_list[0].shape=}")
         if self.frame_interpolator is not None and self.last_image is not None:
             full_image_list = [self.last_image] + image_list
         else:
             full_image_list = image_list
-        print("len(full_image_list): ", len(full_image_list))
+        print("[PostProcessorWorker.execute] {len(full_image_list)=}")
         post_image_list = self.postprocess(full_image_list)
-        print("len(post_image_list): ", len(post_image_list))
+        print("[PostProcessorWorker.execute] {len(post_image_list)=}")
         if self.frame_interpolator is not None and self.last_image is not None:
             post_image_list = post_image_list[1:]
         self.last_image = post_image_list[-1]
         return post_image_list
     
     def background_loop(self, **kwargs):
-        print("PostProcessorWorker background_loop is now running")
+        print("[PostProcessorWorker.background_loop] Running...")
         assert self.rank == self.parallel_config.dit_parallel_size + self.parallel_config.vae_parallel_size
         self.last_image = None  # reset the last image
         self.connect_pipeline()
         # This is based on only one post-processing worker, so no need to worry about synchronization
         while True:
-            print("PostProcessorWorker is waiting for the frames")
+            print("[PostProcessorWorker.background_loop] PostProcessorWorker is waiting for the frames")
             frames = ray.get(self.recv_vae2post_queue_manager.get.remote())  # this should be blocking
-            print("PostProcessorWorker received the frames")
+            print("[PostProcessorWorker.background_loop] PostProcessorWorker received the frames")
             post_image_list = self.execute(frames=frames)
-            print("PostProcessorWorker is sending the post-processed images, len(post_image_list): ", len(post_image_list))
+            print(f"[PostProcessorWorker.background_loop] PostProcessorWorker is sending the post-processed images, {len(post_image_list)=}")
             for image in post_image_list:
                 self.send_post2front_queue_manager.put.remote(image)  # this could be non-blocking

@@ -55,6 +55,7 @@ from xfuser.core.distributed import (
 )
 from xfuser.core.distributed.group_coordinator import GroupCoordinator
 import torch.cuda.nvtx as nvtx
+from journee.ray_pipeline_utils import timer, add_timestamp, get_data_and_passed_time
 # ============================
 
 EXAMPLE_DOC_STRING = """
@@ -853,8 +854,16 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
     def send_latents_to_queue(self, latents):
         if self.rank == 0:  # TODO: Try not to use ray.get to avoid blocking to save time?
             assert hasattr(self, "queue_manager")
+            latents = add_timestamp(latents)
             ray.get(self.queue_manager.put.remote(latents))
     
+    def _get_action(self):
+        action = ray.get(self.action_manager.get.remote())  # this is blocking
+        action, passed_time = get_data_and_passed_time(action)
+        if passed_time is not None:
+            self.print(f"[CogVideoXInteractiveStreamingPipeline._get_action] {passed_time=}s")
+        return action
+
     def get_current_action(self):
         # Get the current action input from the action shared variable and broadcast it to all other dit workers
         # return type: str, e.g. "D"
@@ -864,12 +873,14 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         if self.rank == 0:
             assert hasattr(self, "action_manager")
             # print("[RANK 0] Send action to all other dit workers")
-            current_action = ray.get(self.action_manager.get.remote())  # this is blocking
+            with timer(label=f"[RANK {self.rank}]: `self._get_action`"):
+                current_action = self._get_action()
             cur_action_id = self.control_signal_to_idx.get(current_action, 0)
             # Broadcast the action id to all other dit workers
-            cur_action_id_tensor = torch.tensor([cur_action_id], dtype=torch.int, device=device)
-            assert isinstance(self.dit_process_group.device_group, torch.distributed.ProcessGroup), f"Invalid process group type: {type(self.dit_process_group.device_group)}"
-            torch.distributed.broadcast(cur_action_id_tensor, src=0, group=self.dit_process_group.device_group)
+            with timer(label=f"[RANK {self.rank}]: Broadcasting current action"):
+                cur_action_id_tensor = torch.tensor([cur_action_id], dtype=torch.int, device=device)
+                assert isinstance(self.dit_process_group.device_group, torch.distributed.ProcessGroup), f"Invalid process group type: {type(self.dit_process_group.device_group)}"
+                torch.distributed.broadcast(cur_action_id_tensor, src=0, group=self.dit_process_group.device_group)
         else:
             # print(f"[RANK {self.rank}] Receive action from rank 0")
             # Receive the action id from the first dit worker
@@ -878,13 +889,13 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             # Convert the action id to action string
             current_action = self.idx_to_control_signal[cur_action_id_tensor.item()]
             
-        print(f"[RANK {self.rank}] current_action: {current_action}")
+        self.print(f"current_action: {current_action}")
         assert current_action in ["D", "DR", "DL", "N", "B"], f"Invalid action input: {current_action}"
         return current_action  # e.g. "D"
 
-    def print(self, *info):
+    def print(self, *args, **kwargs):
         if self.rank == 0:
-            print(f"[RANK {self.rank}]: ", *info)
+            print(*args, **kwargs)
 
     def prepare_latents(
         self,
@@ -989,7 +1000,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             self.model_input_actions.extend(action_window)
             self.model_input_actions = self.model_input_actions[-num_latent_frames:]
         if self.rank:
-            print(f"Current actions: {self.model_input_actions}")
+            self.print(f"Current actions: {self.model_input_actions}")
         control_indices = [self.control_signal_to_idx[action] for action in self.model_input_actions] 
         control = self.control_embeddings[control_indices]
         return control
@@ -1088,11 +1099,11 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             num_inference_steps % num_noise_groups == 0
         ), "total inference step number should be divisible by num_noise_groups"
             
-        print(f"Total video tokens in the queue (F): {num_frames}")
-        print(f"Noise group number (G): {num_noise_groups}")
-        print(f"Window size (W): {window_size}")
-        print(f"Num_sample_groups (S): {num_sample_groups}")
-        print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
+        self.print(f"Total video tokens in the queue (F): {num_frames}")
+        self.print(f"Noise group number (G): {num_noise_groups}")
+        self.print(f"Window size (W): {window_size}")
+        self.print(f"Num_sample_groups (S): {num_sample_groups}")
+        self.print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -1191,12 +1202,15 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         self.print("Starting streaming video prediction...")
         for group_idx in range(outer_steps):
             self.print(f"Computing the {group_idx + 1}th/{num_sample_groups} group of video tokens...")
+            group_start_time = time.time()
 
             # Control signal
-            control_emb = self.get_control_from_signal_interactive(num_frames, window_size)
-            control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
+            with timer(label=f"[RANK {self.rank}]: Receiving control signal"):
+                control_emb = self.get_control_from_signal_interactive(num_frames, window_size)
+                control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
             if do_classifier_free_guidance:
-                control_emb = torch.cat([control_emb] * 2)
+                with timer(label=f"[RANK {self.rank}]: Preparation for CFG"):
+                    control_emb = torch.cat([control_emb] * 2)
 
             dit_start_time = time.time()
             nvtx.range_push(f"Decoding of {group_idx}th latent")
@@ -1275,23 +1289,29 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             nvtx.range_pop()
             dit_end_time = time.time()
             streaming_time_info[f"Group_{group_idx}"] = (dit_end_time - dit_start_time)  # unit: second
-            self.print(f"Group_{group_idx} time: {dit_end_time - dit_start_time}")
-            if with_frame_cond:
-                latents_pop = latents[:, 1 : window_size + 1]
-                latents_remain = latents[:, window_size + 1 :]
-                latents_cond_new = latents_pop[:, -1].unsqueeze(1)
-                latents_new = torch.cat(
-                    [latents_cond_new, latents_remain, randn_like(latents_pop, generator)],
-                    dim=1,
-                )  # append noisy video token to the right of the video sequence
-                self.send_latents_to_queue(latents_pop.to('cpu'))
-                latents = latents_new
-            else:
-                latents_pop = latents[:, :window_size]
-                latents_remain = latents[:, window_size:]
-                latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
-                self.send_latents_to_queue(latents_pop.to('cpu'))
-                latents = latents_new
+            self.print(f"Group_{group_idx} DiT time: {dit_end_time - dit_start_time}")
+            with timer(label=f"[RANK {self.rank}]: Post-processing after DiT"):
+                if with_frame_cond:
+                    latents_pop = latents[:, 1 : window_size + 1]
+                    latents_remain = latents[:, window_size + 1 :]
+                    latents_cond_new = latents_pop[:, -1].unsqueeze(1)
+                    latents_new = torch.cat(
+                        [latents_cond_new, latents_remain, randn_like(latents_pop, generator)],
+                        dim=1,
+                    )  # append noisy video token to the right of the video sequence
+                    latents = latents_new
+                else:
+                    latents_pop = latents[:, :window_size]
+                    latents_remain = latents[:, window_size:]
+                    latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
+                    latents = latents_new
+            with timer(label=f"[RANK {self.rank}]: Moving latents to CPU"):
+                latents_pop_cpu = latents_pop.to('cpu')
+            with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
+                self.send_latents_to_queue(latents_pop_cpu)
+            torch.cuda.synchronize()
+            group_end_time = time.time()
+            self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")
         self.print('Average seconds per group: ', np.mean(list(streaming_time_info.values())[1:]), 'var: ', np.var(list(streaming_time_info.values())[1:]))  # discard first one because the latency is usually high
 
         # Offload all models
