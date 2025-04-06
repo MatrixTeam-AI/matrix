@@ -236,10 +236,9 @@ class ParallelVAEWorker(WorkerBase):
             self.send_vae2post_queue_manager.put.remote(frames)
 
     def send_frames(self, frames):
-        print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} is sending the frames")
-        assert self.rank == self.parallel_config.dit_parallel_size
         if self.rank == self.parallel_config.dit_parallel_size:
             assert hasattr(self, 'send_vae2post_queue_manager'), "send_vae2post_queue_manager is not defined on the first vae worker"
+            print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} is sending the frames")
             if torch.is_tensor(frames):
                 frames = frames.to(torch.device('cpu'))  # move the frames to CPU before sending via ray
                 print("[ParallelVAEWorker.send_frames] frames shape: ", frames.shape)
@@ -277,7 +276,6 @@ class ParallelVAEWorker(WorkerBase):
                 if_print=self.rank == self.parallel_config.dit_parallel_size,
             ):
                 frames = self.execute(latents=latents)
-            print("[ParallelVAEWorker.background_loop] frames shape: ", frames.shape)
             # Only the first worker will send the frames to the postprocessor queue  
             with timer(
                 label=f"[ParallelVAEWorker.background_loop] `self.send_frames`",
