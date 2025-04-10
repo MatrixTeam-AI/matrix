@@ -21,6 +21,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 import torch
+import torch.distributed
 from transformers import T5EncoderModel, T5Tokenizer
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
@@ -55,7 +56,7 @@ from xfuser.core.distributed import (
 )
 from xfuser.core.distributed.group_coordinator import GroupCoordinator
 import torch.cuda.nvtx as nvtx
-from journee.ray_pipeline_utils import timer, add_timestamp, get_data_and_passed_time
+from journee.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times, add_timestamp_to_each_item
 # ============================
 
 EXAMPLE_DOC_STRING = """
@@ -844,6 +845,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         self.model_input_actions = []
         self.control_signal_to_idx = {k: i for i, k in enumerate(CONTROL_SIGNAL_TO_PROMPT.keys())}
         self.idx_to_control_signal = {v : k for k, v in self.control_signal_to_idx.items()}
+        self.action_cache = []
 
     def init_ray_sender(self):
         if self.rank == 0:  # assert the total worker rank order is [dit_workers=M, vae_workers=N, postprocessor_worker=1], so the first worker is the dit_worker
@@ -851,18 +853,35 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             self.queue_manager = ray.get_actor("dit2vae_queue", namespace='matrix')
             self.action_manager = ray.get_actor("action_queue", namespace='matrix') 
         
-    def send_latents_to_queue(self, latents):
+    def send_latents_to_queue(self, latents, batch_timestamps):
         if self.rank == 0:  # TODO: Try not to use ray.get to avoid blocking to save time?
             assert hasattr(self, "queue_manager")
-            latents = add_timestamp(latents)
+            latents = add_timestamp(latents, label='DiT-out-latent', timestamps=batch_timestamps)
             ray.get(self.queue_manager.put.remote(latents))
     
+    def fetch_all_actions(self, window_size):
+        # get all actions from front-end, and keep the latest ones
+        if self.rank == 0:
+            assert len(self.action_cache) == 0
+            while len(self.action_cache) < window_size:
+                actions = ray.get(self.action_manager.get_all.remote())  # this may return empty list []
+                actions = add_timestamp_to_each_item(actions, label='DiT-in-control')
+                if len(actions) == 0:
+                    action = ray.get(self.action_manager.get.remote())  # this is blocking
+                    action = add_timestamp(action, label='DiT-in-control')
+                    actions.append(action)
+                self.action_cache.extend(actions)
+            self.action_cache = self.action_cache[-window_size:]
+        torch.distributed.barrier()
+
     def _get_action(self):
-        action = ray.get(self.action_manager.get.remote())  # this is blocking
-        action, passed_time = get_data_and_passed_time(action)
-        if passed_time is not None:
-            self.print(f"[CogVideoXInteractiveStreamingPipeline._get_action] {passed_time=}s")
-        return action
+        action = self.action_cache.pop(0)
+        action, timestamps = get_data_and_timestamps(action)
+        if timestamps is not None:
+            passed_times = get_passed_times(timestamps)
+            if passed_times:
+                self.print(f"[CogVideoXInteractiveStreamingPipeline._get_action] passed_times:\n{passed_times}")
+        return action, timestamps
 
     def get_current_action(self):
         # Get the current action input from the action shared variable and broadcast it to all other dit workers
@@ -870,11 +889,12 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         device = torch.device(f'cuda:{self.dit_process_group.local_rank}')
         # print("Rank: ", self.rank, "Device: ", device)
         # print("current dit group: ", self.dit_process_group.ranks)
+        timestamps = None
         if self.rank == 0:
             assert hasattr(self, "action_manager")
             # print("[RANK 0] Send action to all other dit workers")
             with timer(label=f"[RANK {self.rank}]: `self._get_action`"):
-                current_action = self._get_action()
+                current_action, timestamps = self._get_action()
             cur_action_id = self.control_signal_to_idx.get(current_action, 0)
             # Broadcast the action id to all other dit workers
             with timer(label=f"[RANK {self.rank}]: Broadcasting current action"):
@@ -891,7 +911,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             
         self.print(f"current_action: {current_action}")
         assert current_action in ["D", "DR", "DL", "N", "B"], f"Invalid action input: {current_action}"
-        return current_action  # e.g. "D"
+        return current_action, timestamps
 
     def print(self, *args, **kwargs):
         if self.rank == 0:
@@ -991,19 +1011,33 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         assert hasattr(self, "control_embeddings")
         if len(self.model_input_actions) == 0:  # initialize the action window for the first time
             self.model_input_actions = [self.init_action] * num_latent_frames
+            self.model_input_action_timestamps = None
+            if self.rank == 0:
+                self.model_input_action_timestamps = [[] for _ in range(num_latent_frames)]
         else:
             action_window = []
+            timestamps_window = []
+            self.fetch_all_actions(window_size)
             for _ in range(window_size):
                 # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
-                action = self.get_current_action()
+                action, timestamps = self.get_current_action()
                 action_window.append(action)
+                timestamps_window.append(timestamps)
             self.model_input_actions.extend(action_window)
             self.model_input_actions = self.model_input_actions[-num_latent_frames:]
+            if self.model_input_action_timestamps is not None:
+                self.model_input_action_timestamps.extend(timestamps_window)
+                self.model_input_action_timestamps = self.model_input_action_timestamps[-num_latent_frames:]
         if self.rank:
             self.print(f"Current actions: {self.model_input_actions}")
         control_indices = [self.control_signal_to_idx[action] for action in self.model_input_actions] 
         control = self.control_embeddings[control_indices]
         return control
+
+    def pop_timestamps(self, window_size):
+        if self.model_input_action_timestamps is None:
+            return None
+        return self.model_input_action_timestamps[-window_size : ]
 
     def decode_latents(self, latents: torch.Tensor, sliced_decode=False) -> torch.Tensor:
         latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_channels, num_frames, height, width]
@@ -1235,16 +1269,17 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
                     # )
 
                     # predict noise model_output
-                    noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep=timesteps,
-                        image_rotary_emb=image_rotary_emb,
-                        attention_kwargs=attention_kwargs,
-                        return_dict=False,
-                        control_emb=control_emb,
-                    )[0]
-                    noise_pred = noise_pred.float()
+                    with timer(label=f"[RANK {self.rank}]: Only DiT with {latent_model_input.shape=}"): 
+                        noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep=timesteps,
+                            image_rotary_emb=image_rotary_emb,
+                            attention_kwargs=attention_kwargs,
+                            return_dict=False,
+                            control_emb=control_emb,
+                        )[0]
+                        noise_pred = noise_pred.float()
 
                     # perform guidance
                     # issue with strange logic: https://github.com/huggingface/diffusers/issues/9641
@@ -1308,7 +1343,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             with timer(label=f"[RANK {self.rank}]: Moving latents to CPU"):
                 latents_pop_cpu = latents_pop.to('cpu')
             with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
-                self.send_latents_to_queue(latents_pop_cpu)
+                batch_timestamps = self.pop_timestamps(window_size)
+                self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
             torch.cuda.synchronize()
             group_end_time = time.time()
             self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")

@@ -37,9 +37,11 @@ class CogVideoXUpsample3D(nn.Module):
 
         self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=padding)
         self.compress_time = compress_time
+        self.cached_inputs = None
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
         if self.compress_time:
+            cached_inputs = inputs
             if inputs.shape[2] > 1 and inputs.shape[2] % 2 == 1:
                 # split first frame
                 x_first, x_rest = inputs[:, :, 0], inputs[:, :, 1:]
@@ -51,9 +53,15 @@ class CogVideoXUpsample3D(nn.Module):
             elif inputs.shape[2] > 1:
                 inputs = F.interpolate(inputs, scale_factor=2.0)
             else:
-                inputs = inputs.squeeze(2)
+                # inputs = inputs.squeeze(2)
+                # inputs = F.interpolate(inputs, scale_factor=2.0)
+                # inputs = inputs[:, :, None, :, :]
+                if self.cached_inputs is not None:
+                    inputs = torch.cat([self.cached_inputs[:, :, -1], inputs], dim=2)
                 inputs = F.interpolate(inputs, scale_factor=2.0)
-                inputs = inputs[:, :, None, :, :]
+                if self.cached_inputs is not None:
+                    inputs = inputs[:, :, 2:]
+            self.cached_inputs = cached_inputs
         else:
             # only interpolate 2D
             b, c, t, h, w = inputs.shape

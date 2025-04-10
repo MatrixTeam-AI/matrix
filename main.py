@@ -27,13 +27,13 @@ class DummyModel:
 def init_model():
     return DummyModel(), DummyQueue(), DummyQueue() # model, frame_queue, control_queue
 #============ Interfaces with the backend model ===========#
-from journee.interface import init_model
+from journee.interface import init_model, passed_times_dict_to_str
 
 WIDTH = 720
 HEIGHT = 480
-VIDEO_FPS = 16
-CONTROL_FPS = VIDEO_FPS // 4
-DISPLAY_FPS = 60 # determine the frequency to update frame and control signals
+VIDEO_FPS = 1000
+CONTROL_FPS = 1000
+DISPLAY_FPS = 17 # determine the frequency to update frame and control signals
 
 # Pre-create the frames for default cases. 
 RED_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
@@ -144,8 +144,9 @@ class FrameManager:
             and (if_wait_empty or not self.frame_queue.empty())
         ):
             logger.info(f"[main.FrameManager.get] Getting frame...")
-            frame, passed_time = self.frame_queue.get()  #TODO: may need to modify the interface of `frame_queue`
-            logger.info(f"[main.FrameManager.get] Got frame! {passed_time=}s")
+            frame, passed_times = self.frame_queue.get()
+            passed_times_str = passed_times_dict_to_str(passed_times)
+            logger.info(f"[main.FrameManager.get] Got frame! passed_times:\n{passed_times_str}")
             frame = frame[::-1] # flip the H dimension for wmk
             self.last_frame = frame
             self.last_frame_time = dt
@@ -167,7 +168,7 @@ class ControlManager:
         self.last_control_time = 100. # a big enough number to make sure the first control is entered.
         self.control_dt = 1 / self.control_fps
 
-    def put(self, control, dt):
+    def put(self, control, dt, check_full=True):
         """
         control: current control
         dt: Time elapsed since last update in seconds
@@ -181,7 +182,7 @@ class ControlManager:
         )
         if (
             self.last_control_time >= self.control_dt
-            and not self.control_queue.full()
+            and not check_full or not self.control_queue.full()
         ):
             logger.info(f"[main.ControlManager.put] Putting control...")
             self.control_queue.put(control) #TODO: may need to modify the interface of `control_queue`
@@ -209,14 +210,13 @@ def generate_frames(player: Player, dt: float):
         control = 'DL'
     elif d_key_pressed:
         control = 'DR'
-    control_manager.put(control, dt)    # non-blocking
+    control_manager.put(control, dt, check_full=False)    # non-blocking
 
     # Get the frame to display
-    num_warmup_frames = 1
     frame = frame_manager.get(
         dt,
-        if_wait_empty=frame_counter < num_warmup_frames,
-    )   # blocking
+        if_wait_empty=True, # blocking
+    )
     
     # when no frame is available, we display a color frame
     if frame is None:

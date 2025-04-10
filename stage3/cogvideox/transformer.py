@@ -471,8 +471,10 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         attention_kwargs: Optional[Dict[str, Any]] = None,
         return_dict: bool = True,
-        control_emb: torch.Tensor = None
+        control_emb: torch.Tensor = None,
+        enable_parallelism: bool = True,
     ):
+        use_parallelism = enable_parallelism and model_parallel_is_initialized()
         if attention_kwargs is not None:
             attention_kwargs = attention_kwargs.copy()
             lora_scale = attention_kwargs.pop("scale", 1.0)
@@ -518,7 +520,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         control_emb = self.control_embedding(control_emb)
 
         # 2.5. Prepare input for sequence parallel
-        if model_parallel_is_initialized():
+        if use_parallelism:
             seq_length = text_seq_length + hidden_states.shape[-2]
             self.prepare_attn_processor_for_sequence_parallel(
                 seq_length = seq_length, num_frames = num_frames
@@ -601,7 +603,7 @@ class CogVideoXTransformer3DModel(ModelMixin, ConfigMixin, PeftAdapterMixin):
         hidden_states = self.proj_out(hidden_states)
 
         # 4.5 Prepare output for sequence parallel
-        if model_parallel_is_initialized():
+        if use_parallelism:
             hidden_states = self.prepare_output_for_sequence_parallel(num_frames, hidden_states)
 
         # 5. Unpatchify

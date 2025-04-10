@@ -20,21 +20,93 @@ def timer(label="Block", if_print=True, print_rank=0):
 
 ADD_TIMESTAMP = True
 
-def add_timestamp(data):
-    if not ADD_TIMESTAMP:
-        return data
-    start_time = time.perf_counter()
-    return dict(
-        data = data,
-        timestamp = start_time,
-    )
+def is_data_with_timestamps(data):
+    return isinstance(data, dict) and "timestamps" in data
 
-def get_data_and_passed_time(data):
-    if not (isinstance(data, dict) and "timestamp" in data):
+def add_timestamp(
+    data=None,
+    timestamps=None,
+    update=True,
+    label=None,
+    sync_cuda=False,
+    return_tuple=False,
+    current_time=None,
+):
+    if not ADD_TIMESTAMP:
+        if return_tuple:
+            return data, None
+        else:
+            return data
+        
+    if current_time is None:
+        if sync_cuda and torch.cuda.is_available():
+            torch.cuda.synchronize()
+        current_time = time.perf_counter()
+    timestamp = (label, current_time)
+    if not is_data_with_timestamps(data):
+        data = dict(data=data, timestamps=[])
+        if timestamps is not None:
+            data["timestamps"] = timestamps
+    if update:
+        if len(data['timestamps']) > 0 and isinstance(data['timestamps'][0], list):
+            # a batch of timestamps: List[List[timestamp tuple[str, float]]]
+            for timestamps in data['timestamps']:
+                timestamps.append(timestamp)
+        else:
+            # a single timestamp: List[timestamp tuple[str, float]]
+            data['timestamps'].append(timestamp)
+    if return_tuple:
+        return data['data'], data['timestamps']
+    else:
+        return data
+    
+def add_timestamp_to_each_item(
+    data_list: list,
+    timestamps=None,
+    update=True,
+    label=None,
+    sync_cuda=False,
+    return_tuple=False,
+):
+    assert isinstance(data_list, list)
+    if not ADD_TIMESTAMP:
+        return data_list
+    
+    if sync_cuda and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    current_time = time.perf_counter()
+
+    return [
+        add_timestamp(
+            data=data,
+            timestamps=timestamps,
+            update=update,
+            label=label,
+            return_tuple=return_tuple,
+            current_time=current_time,
+        )
+        for data in data_list
+    ]
+
+def get_data_and_timestamps(data):
+    if not is_data_with_timestamps(data):
         return data, None
-    end_time = time.perf_counter()
-    passed_time = end_time - data["timestamp"]
-    return data["data"], passed_time
+    return data['data'], data['timestamps']
+
+def get_passed_times(timestamps):
+    passed_times = dict()
+    if timestamps is None:
+        return passed_times
+    for i, (label, current_time) in enumerate(timestamps[:-1]):
+        label_next, time_next = timestamps[i + 1]
+        label_interval = f"{label} to {label_next}"
+        time_interval = time_next - current_time
+        passed_times[label_interval] = time_interval
+    return passed_times
+
+def passed_times_dict_to_str(passed_times):
+    passed_times_str = "\n".join([f" [{k}]: {v:.3f}s" for k, v in passed_times.items()])
+    return passed_times_str
 
 @ray.remote(num_cpus=1, max_concurrency=3)
 class QueueManager:
@@ -50,14 +122,10 @@ class QueueManager:
         print(f"[QueueManager] get() called")
         return self.queue.get()
 
-    def get_batch(self):
-        """一次性把队列里当前已有的所有元素全拿出来，返回列表。"""
-        items = []
-        # ray.util.queue.Queue 没有原生的 get_nowait() 方法，但如果 queue.empty() == False，
-        # 那么 self.queue.get() 会立刻返回，而不会阻塞。
-        while not self.queue.empty():
-            items.append(self.queue.get())
-        return items
+    def get_all(self):
+        print(f"[QueueManager] get_all() called")
+        size = self.queue.size()
+        return self.queue.get_nowait_batch(size)
 
     def print_queue(self):
         print(f"[QueueManager] Current queue: {self.queue}")
@@ -68,8 +136,8 @@ class QueueManager:
     def empty(self):
         return self.queue.empty()
     
-    def qsize(self):
-        return self.queue.qsize()
+    def size(self):
+        return self.queue.size()
 
 
 @ray.remote

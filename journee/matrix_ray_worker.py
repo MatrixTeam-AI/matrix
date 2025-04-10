@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 from itertools import islice, repeat
+import copy
 
 from PIL import Image
 import torch
@@ -25,7 +26,7 @@ from xfuser.core.distributed.parallel_state import (init_distributed_environment
                                                     get_world_group,
                                                     get_vae_parallel_group)
 
-from ray_pipeline_utils import timer, add_timestamp, get_data_and_passed_time
+from ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage3.cogvideox.parallel_vae_utils import VAEParallelState
@@ -174,10 +175,11 @@ class ParallelVAEWorker(WorkerBase):
     
     def _get_latents(self):
         latents = ray.get(self.recv_dit2vae_queue_manager.get.remote())
-        latents, passed_time = get_data_and_passed_time(latents)
-        if passed_time is not None:
-            print(f"[ParallelVAEWorker._get_latents] {passed_time=}s")
-        return latents
+        latents, batch_timestamps = add_timestamp(latents, label='VAE-latents', return_tuple=True)
+        if batch_timestamps is not None:
+            batch_passed_times = [get_passed_times(timestamps) for timestamps in batch_timestamps]
+            print(f"[ParallelVAEWorker._get_latents] {batch_passed_times=}")
+        return latents, batch_timestamps
     
     def get_latents(self, **kwargs):
         # receive latents from DiT worker and send to all VAE worker
@@ -192,15 +194,15 @@ class ParallelVAEWorker(WorkerBase):
         vae_parallel_size = self.parallel_config.vae_parallel_size
         if vae_parallel_size == 1:
             print("[ParallelVAEWorker.get_latents] vae_parallel_size == 1")
-            latents = self._get_latents()
-            dit2vae_qsize = ray.get(self.recv_dit2vae_queue_manager.qsize.remote())
+            latents, batch_timestamps = self._get_latents()
+            dit2vae_qsize = ray.get(self.recv_dit2vae_queue_manager.size.remote())
             print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the latents, {dit2vae_qsize=}")
             latents = latents.to(dtype=dtype, device=device)
-            return latents
+            return latents, batch_timestamps
         else:
             if global_rank == first_vae_worker_rank:
-                latents = self._get_latents()
-                dit2vae_qsize = ray.get(self.recv_dit2vae_queue_manager.qsize.remote())
+                latents, batch_timestamps = self._get_latents()
+                dit2vae_qsize = ray.get(self.recv_dit2vae_queue_manager.size.remote())
                 print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the latents, {dit2vae_qsize=}")
                 latents = latents.to(dtype=dtype, device=device)  # move to GPU
                 if not hasattr(self, 'shape_tensor'):
@@ -213,6 +215,12 @@ class ParallelVAEWorker(WorkerBase):
                     torch.distributed.broadcast(shape_tensor, src=global_rank, group=get_vae_parallel_group())
                     self.shape_tensor = shape_tensor
                 torch.distributed.broadcast(latents, src=global_rank, group=get_vae_parallel_group())
+                _, batch_timestamps = add_timestamp(
+                    label='VAE-broadcast-in-latent',
+                    sync_cuda=True,
+                    return_tuple=True,
+                    timestamps=batch_timestamps,
+                )
                 print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is broadcasting the latents")
             else:
                 print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is waiting for the latents")
@@ -226,49 +234,72 @@ class ParallelVAEWorker(WorkerBase):
                 latents = torch.zeros(torch.Size(self.shape_tensor), dtype=dtype, device=device)
                 torch.distributed.broadcast(latents, src=first_vae_worker_rank, group=get_vae_parallel_group())
                 print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is receiving the latents")
-        return latents
+        return latents, batch_timestamps
     
-    def _send_frames(self, frames, blocking=True):
-        frames = add_timestamp(frames)
+    def _send_frames(self, frames, blocking=True, timestamps=None):
+        frames = add_timestamp(frames, label='VAE-out-frame', timestamps=timestamps)
         if blocking:
             ray.get(self.send_vae2post_queue_manager.put.remote(frames))
         else:
             self.send_vae2post_queue_manager.put.remote(frames)
 
-    def send_frames(self, frames):
+    def send_frames(self, frames, batch_timestamps=None):
         if self.rank == self.parallel_config.dit_parallel_size:
             assert hasattr(self, 'send_vae2post_queue_manager'), "send_vae2post_queue_manager is not defined on the first vae worker"
             print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} is sending the frames")
             if torch.is_tensor(frames):
                 frames = frames.to(torch.device('cpu'))  # move the frames to CPU before sending via ray
                 print("[ParallelVAEWorker.send_frames] frames shape: ", frames.shape)
-                self._send_frames(frames, blocking=True)
+                self._send_frames(frames, blocking=True, timestamps=batch_timestamps)
             else:
                 assert isinstance(frames, list), "frames should be a list of images in numpy array format"
                 print(f"[ParallelVAEWorker.send_frames] {len(frames)=}, {frames[0].shape=}")
-                for frame in frames:
-                    self._send_frames(frame, blocking=False)
+                for i, frame in enumerate(frames):
+                    timestamps = None
+                    if batch_timestamps is not None:
+                        timestamps = batch_timestamps[i]
+                    self._send_frames(frame, blocking=False, timestamps=timestamps)
             print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} sent the frames")
             
+    def repeat_batch_timestamps(self, batch_timestamps, repeat):
+        repeated_batch_timestamps = []
+        for timestamps in batch_timestamps:
+            for _ in range(repeat):
+                repeated_batch_timestamps.append(copy.deepcopy(timestamps))
+        return repeated_batch_timestamps
+    
     def background_loop(self, **kwargs):
         self.connect_pipeline()
         latents_window = []
+        batch_timestamps_window = []
+        min_num_latents = 2
         while True:
             # Only the first worker will receive the latent from queue, and distribute the data to all other workers
             with timer(
                 label=f"[ParallelVAEWorker.background_loop] `self.get_latents`",
                 if_print=self.rank == self.parallel_config.dit_parallel_size,
             ):
-                latents = self.get_latents()  # every worker will receive the same latents
+                latents, batch_timestamps = self.get_latents()  # every worker will receive the same latents
             # ======= will be removed after the vae worker's cache is fixed =======
             min_num_latents = 2
             if latents.shape[1] == 1:
                 latents_window.append(latents)
+                if batch_timestamps is not None:
+                    batch_timestamps_window.extend(batch_timestamps)
                 if len(latents_window) < min_num_latents:
                     print(f"[ParallelVAEWorker.background_loop] Not enough latents to decode")
                     continue
+                # get enough latents to decode
                 latents = torch.cat(latents_window, axis=1)
                 latents_window = []
+                if len(batch_timestamps_window) > 0:
+                    _, batch_timestamps = add_timestamp(
+                        label='VAE-collect-in-latent',
+                        return_tuple=True,
+                        timestamps=batch_timestamps_window,
+                    )
+                    batch_timestamps_window = []
+                min_num_latents = 1
             # =====================================================================
             # All workers process the same latents and produce the same frames (communication is automatically handled in the forward within the vae group)
             with timer(
@@ -276,12 +307,15 @@ class ParallelVAEWorker(WorkerBase):
                 if_print=self.rank == self.parallel_config.dit_parallel_size,
             ):
                 frames = self.execute(latents=latents)
+            # Repeat timestamps for each frame
+            if batch_timestamps is not None:
+                batch_timestamps = self.repeat_batch_timestamps(batch_timestamps, repeat=4)
             # Only the first worker will send the frames to the postprocessor queue  
             with timer(
                 label=f"[ParallelVAEWorker.background_loop] `self.send_frames`",
                 if_print=self.rank == self.parallel_config.dit_parallel_size,
             ):
-                self.send_frames(frames)
+                self.send_frames(frames, batch_timestamps=batch_timestamps)
 
 
 class PostProcessorWorker(WorkerBase):

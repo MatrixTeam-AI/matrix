@@ -1,7 +1,7 @@
 import time
 
 import ray
-from .ray_pipeline_utils import add_timestamp, get_data_and_passed_time
+from .ray_pipeline_utils import add_timestamp, get_data_and_timestamps, get_passed_times, passed_times_dict_to_str
 
 class QueueInterface:
     def __init__(
@@ -12,12 +12,16 @@ class QueueInterface:
 
     def get(self):
         item = ray.get(self.queue_ray_actor.get.remote())   # blocking
-        item, passed_time = get_data_and_passed_time(item)
-        return item, passed_time
-
-    def put(self, item):
-        item = add_timestamp(item)
-        self.queue_ray_actor.put.remote(item)   # non-blocking
+        item, timestamps = add_timestamp(item, label='Display-frame', return_tuple=True)
+        passed_times = get_passed_times(timestamps)
+        return item, passed_times
+    
+    def put(self, item, blocking=False):
+        item = add_timestamp(item, label='Display-control')
+        if blocking:
+            ray.get(self.queue_ray_actor.put.remote(item))   # blocking
+        else:
+            self.queue_ray_actor.put.remote(item)   # non-blocking
 
     def full(self):
         return ray.get(self.queue_ray_actor.full.remote())
@@ -26,7 +30,7 @@ class QueueInterface:
         return ray.get(self.queue_ray_actor.empty.remote())
     
     def size(self):
-        return ray.get(self.queue_ray_actor.qsize.remote())
+        return ray.get(self.queue_ray_actor.size.remote())
 
 class DummyModel:
     def start(self):
