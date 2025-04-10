@@ -192,6 +192,7 @@ class ParallelVAEWorker(WorkerBase):
         dtype = torch.bfloat16  # TODO: dtype could be a member variable set by engine conifg: https://github.com/xdit-project/xDiT/blob/8f4b9d30ccf278aef1e7ae985f59f7c186371d41/xfuser/model_executor/pipelines/base_pipeline.py#L102
         device = torch.device(f"cuda:{local_rank}")
         vae_parallel_size = self.parallel_config.vae_parallel_size
+        batch_timestamps = None
         if vae_parallel_size == 1:
             print("[ParallelVAEWorker.get_latents] vae_parallel_size == 1")
             latents, batch_timestamps = self._get_latents()
@@ -281,7 +282,6 @@ class ParallelVAEWorker(WorkerBase):
             ):
                 latents, batch_timestamps = self.get_latents()  # every worker will receive the same latents
             # ======= will be removed after the vae worker's cache is fixed =======
-            min_num_latents = 2
             if latents.shape[1] == 1:
                 latents_window.append(latents)
                 if batch_timestamps is not None:

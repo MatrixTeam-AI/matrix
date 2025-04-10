@@ -57,7 +57,7 @@ class CogVideoXUpsample3D(nn.Module):
                 # inputs = F.interpolate(inputs, scale_factor=2.0)
                 # inputs = inputs[:, :, None, :, :]
                 if self.cached_inputs is not None:
-                    inputs = torch.cat([self.cached_inputs[:, :, -1], inputs], dim=2)
+                    inputs = torch.cat([self.cached_inputs[:, :, -1:], inputs], dim=2)
                 inputs = F.interpolate(inputs, scale_factor=2.0)
                 if self.cached_inputs is not None:
                     inputs = inputs[:, :, 2:]
