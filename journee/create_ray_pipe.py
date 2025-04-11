@@ -6,12 +6,13 @@ from ray_pipeline_utils import QueueManager, SharedVar, timer
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create Ray queues and shared variables.")
     parser.add_argument("--action_queue_maxsize", type=int, default=100, help="Max size of action queue")
+    parser.add_argument("--dit2vae_queue_maxsize", type=int, default=2, help="Max size of dit2vae queue")
     args = parser.parse_args()
 
     ray.init(address='auto')  # connect to ray cluster
     
     action_queue = QueueManager.options(namespace='matrix', name="action_queue").remote(maxsize=args.action_queue_maxsize)  # Create a queue for accepting action commands
-    dit2vae_queue = QueueManager.options(namespace='matrix', name="dit2vae_queue").remote()  # DiT --> VAE
+    dit2vae_queue = QueueManager.options(namespace='matrix', name="dit2vae_queue").remote(maxsize=args.dit2vae_queue_maxsize)  # DiT --> VAE
     vae2post_queue = QueueManager.options(namespace='matrix', name="vae2post_queue").remote()  # VAE --> Postprocessing
     post2front_queue = QueueManager.options(namespace='matrix', name="post2front_queue").remote()  # Postprocessing --> front end
     actors = ray.util.list_named_actors(all_namespaces=True)

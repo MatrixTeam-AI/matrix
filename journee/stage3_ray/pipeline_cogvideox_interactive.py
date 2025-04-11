@@ -1034,10 +1034,13 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         control = self.control_embeddings[control_indices]
         return control
 
-    def pop_timestamps(self, window_size):
+    def pop_timestamps(self, window_size, with_frame_cond=True):
         if self.model_input_action_timestamps is None:
             return None
-        return self.model_input_action_timestamps[-window_size : ]
+        if with_frame_cond:
+            return self.model_input_action_timestamps[1 : 1 + window_size]
+        else:
+            return self.model_input_action_timestamps[ : window_size]
 
     def decode_latents(self, latents: torch.Tensor, sliced_decode=False) -> torch.Tensor:
         latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_channels, num_frames, height, width]
@@ -1343,7 +1346,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             with timer(label=f"[RANK {self.rank}]: Moving latents to CPU"):
                 latents_pop_cpu = latents_pop.to('cpu')
             with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
-                batch_timestamps = self.pop_timestamps(window_size)
+                batch_timestamps = self.pop_timestamps(window_size, with_frame_cond)
                 self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
             torch.cuda.synchronize()
             group_end_time = time.time()
