@@ -5,7 +5,7 @@
 # x11vnc: display to VNC
 # noVNC: web client for VNC
 sudo apt-get update
-sudo apt-get install xvfb libgll-mesa-glx
+sudo apt-get install xvfb libgl1-mesa-glx
 sudo apt-get install x11vnc
 git clone https://github.com/novnc/noVNC.git # v1.6.0
 
