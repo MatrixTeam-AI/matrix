@@ -37,10 +37,10 @@ import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 from pipeline_cogvideox_interactive  import CogVideoXInteractiveStreamingPipeline
-from stage3.cogvideox.transformer import CogVideoXTransformer3DModel
-from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
-from stage3.cogvideox.scheduler import LCMSwinScheduler
-from stage3.cogvideox.parallel_vae_utils import VAEParallelState
+from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
+from stage4.cogvideox.scheduler import LCMSwinScheduler
+from stage4.cogvideox.parallel_vae_utils import VAEParallelState
 
 def generate_random_control_signal(
         length, seed, repeat_lens=[2, 2, 2], signal_choices=['D', 'DR', 'DL'],
@@ -237,7 +237,7 @@ def main():
     parser = xFuserArgs.add_cli_args(parser)
     add_argument_overridable(parser, "--prompt", type=str, help="The description of the video to be generated")
     add_argument_overridable(parser, "--model_path", type=str, help="Path of the pre-trained model use")
-    add_argument_overridable(parser, "--transformer_path", type=str, default="", help="Transformer save path in stage3 training.")
+    add_argument_overridable(parser, "--transformer_path", type=str, default="", help="Transformer save path in stage4 training.")
     add_argument_overridable(parser, "--image_or_video_path", type=str, help="The path of the image to be used as the background of the video.")
     add_argument_overridable(parser, "--lora_path", type=str, default=None, help="The path of the LoRA weights to be used")
     add_argument_overridable(parser, "--lora_rank", type=int, default=256, help="The rank of the LoRA weights")
@@ -256,8 +256,8 @@ def main():
     add_argument_overridable(parser, "--num_sample_groups", type=int, default=8, help="Number of sampled videos groups")
     add_argument_overridable(parser, "--init_video_clip_frame", type=int, default=17, help="Frame number of init_video to be clipped, should be 4n+1")
     # lcm arguments
-    parser.add_argument("--original_inference_steps", type=int, default=40, help="Number of DDIM steps for training consistency model")
-    parser.add_argument("--lcm_multiplier", type=int, default=1, help="Number of lcm multiplier")
+    add_argument_overridable(parser, "--original_inference_steps", type=int, default=40, help="Number of DDIM steps for training consistency model")
+    add_argument_overridable(parser, "--lcm_multiplier", type=int, default=1, help="Number of lcm multiplier")
     # parallel arguments
     add_argument_overridable(parser, "--split_text_embed_in_sp", type=str, default="true", choices=["true", "false", "auto"], help="Whether to split text embed `encoder_hidden_states` for sequence parallel.")
     add_argument_overridable(parser, "--parallel_decoding_idx", type=int, default=-1, choices=[-1, 0, 1, 2, 3], help="Upblock index in VAE.decoder to enable parallel decoding. -1 means disabling parallel decoding.")
