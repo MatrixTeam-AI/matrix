@@ -1304,12 +1304,11 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
                     latents_cond = latents[:, :1]
                     latents, old_pred_original_sample = self.scheduler.step(
                         noise_pred[:,1:],
-                        old_pred_original_sample,
                         timesteps[:,1:],
-                        timesteps_back[:,1:] if timesteps_back is not None else None,
                         latents[:,1:],
                         **extra_step_kwargs,
                         return_dict=False,
+                        num_lcm_phases=num_noise_groups * lcm_multiplier
                     )
                     latents = latents.to(prompt_embeds.dtype)
                     latents = torch.cat([latents_cond, latents], dim=1)  # keep cond frame unchanged
