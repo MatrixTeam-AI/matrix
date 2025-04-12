@@ -17,3 +17,7 @@ opencv-python
 imageio
 easydict
 xfuser==0.4.2
+ray==2.44.0
+logfire==3.11.0
+pyglet==2.1.3
+wmk==0.38
