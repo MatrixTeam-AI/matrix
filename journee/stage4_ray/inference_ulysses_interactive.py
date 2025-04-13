@@ -202,6 +202,8 @@ def generate_video(
             init_video=video,
             num_noise_groups=num_noise_groups,
             num_sample_groups=num_sample_groups,
+            original_inference_steps=original_inference_steps,
+            lcm_multiplier=lcm_multiplier,
         )
 
 def add_argument_overridable(parser, *args, **kwargs):
