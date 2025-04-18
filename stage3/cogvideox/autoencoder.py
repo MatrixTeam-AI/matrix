@@ -66,7 +66,7 @@ class CogVideoXSafeConv3d(nn.Conv3d):
         memory_count = (
             (input.shape[0] * input.shape[1] * input.shape[2] * input.shape[3] * input.shape[4]) * 2 / 1024**3
         )
-        if VAEParallelState.is_split():
+        if VAEParallelState.is_split() and self.kernel_size[-1] > 1:
             assert memory_count <= 2
             return self._parallel_forward(input)
 

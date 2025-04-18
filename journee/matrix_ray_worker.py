@@ -28,8 +28,8 @@ from xfuser.core.distributed.parallel_state import (init_distributed_environment
 
 from ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
-from stage3.cogvideox.autoencoder import AutoencoderKLCogVideoX
-from stage3.cogvideox.parallel_vae_utils import VAEParallelState
+from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
+from stage4.cogvideox.parallel_vae_utils import VAEParallelState
 try:
     from post_processors.Interpolator_RIFE import RIFEInterpolator
 except ImportError as e:

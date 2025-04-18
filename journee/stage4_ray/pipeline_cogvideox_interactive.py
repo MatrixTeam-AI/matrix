@@ -1072,6 +1072,13 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             frames = self.vae.decode(latents).sample
         
         return frames
+    
+    def wait(self, group_idx, sec):
+        # wait for the preparation of VAE
+        torch.cuda.synchronize()
+        if group_idx == 1:
+            time.sleep(30)
+        time.sleep(sec)
 
     @torch.no_grad()
     def __call__(
@@ -1340,6 +1347,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
                 batch_timestamps = self.pop_timestamps(window_size, with_frame_cond)
                 self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
+            with timer(label=f"[RANK {self.rank}]: Waiting"):
+                self.wait(group_idx, sec=0.02)  # wait for the preparation of VAE
             torch.cuda.synchronize()
             group_end_time = time.time()
             self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")

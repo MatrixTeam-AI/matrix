@@ -6,7 +6,7 @@ from ray_pipeline_utils import QueueManager, SharedVar, timer
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create Ray queues and shared variables.")
     parser.add_argument("--action_queue_maxsize", type=int, default=100, help="Max size of action queue")
-    parser.add_argument("--dit2vae_queue_maxsize", type=int, default=2, help="Max size of dit2vae queue")
+    parser.add_argument("--dit2vae_queue_maxsize", type=int, default=1, help="Max size of dit2vae queue")
     args = parser.parse_args()
 
     ray.init(address='auto')  # connect to ray cluster

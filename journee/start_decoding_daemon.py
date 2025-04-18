@@ -125,7 +125,10 @@ def new_daemon(
             time.sleep(10)  # Keep the process alive to prevent actors from being destroyed
     except KeyboardInterrupt:
         print("Shutting down.")
-    
+
+def get_abspath_if_str(path):
+    return os.path.abspath(path) if isinstance(path, str) else path
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Start the decoding daemon")
     parser.add_argument("--model_path", type=str, help="Path of the `diffusers` model")
@@ -139,10 +142,10 @@ if __name__ == "__main__":
 
     # debug_daemon(
     new_daemon(
-        args.model_path, 
-        args.frame_interpolator_model_path, 
+        get_abspath_if_str(args.model_path), 
+        get_abspath_if_str(args.frame_interpolator_model_path), 
         args.export_video_for_debug,
-        args.video_output_dir,
+        get_abspath_if_str(args.video_output_dir),
         args.dit_parallel_size,
         args.vae_parallel_size,
         args.post_parallel_size,

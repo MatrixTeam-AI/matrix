@@ -33,7 +33,7 @@ WIDTH = 720
 HEIGHT = 480
 VIDEO_FPS = 1000
 CONTROL_FPS = 1000
-DISPLAY_FPS = 17 # determine the frequency to update frame and control signals
+DISPLAY_FPS = 31 # determine the frequency to update frame and control signals
 
 # Pre-create the frames for default cases. 
 RED_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
