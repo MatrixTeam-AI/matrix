@@ -10,7 +10,8 @@ from diffusers.video_processor import VideoProcessor
 
 from matrix_ray_worker import EngineConfig, ParallelConfig
 from matrix_ray_driver import RayMatrixPipeline
-from ray_pipeline_utils import QueueManager, timer
+from utils.ray_pipeline_utils import QueueManager, timer
+from utils.log_utils import logger_info as print
     
 def debug_daemon(
     matrix_ckpt_path: str,
@@ -33,7 +34,7 @@ def debug_daemon(
         'env_vars': {"MASTER_ADDR": "localhost", "MASTER_PORT": "12355"}
     }
     actors = ray.util.list_named_actors(all_namespaces=True)
-    print([actor_name for actor_name in actors])
+    print(f"{[actor_name for actor_name in actors]=}")
     dit2vae_queue = ray.get_actor("dit2vae_queue", namespace='matrix')  # DiT --> VAE
     vae2post_queue = ray.get_actor("vae2post_queue", namespace='matrix')  # VAE --> Postprocessing
     post2web_queue = ray.get_actor("post2web_queue", namespace='matrix')  # Postprocessing --> Web
@@ -67,7 +68,7 @@ def debug_daemon(
         with timer("Decoding Latents"):
             frames = matrix_ray_pipline.call_vae(latents=latent)[0]  # only the rank 0 worker will return the results
         frames = frames[:, :, 4:]  # torch.Size([1, 3, num_frames=4, 480, 720])
-        print(frames.shape)
+        print(f"{frames.shape=}")
         
         if parallel_config.post_parallel_size > 0:  # if there is postprocessor workers
             full_video = matrix_ray_pipline.call_postprocessor(frames=frames)
@@ -81,7 +82,7 @@ def debug_daemon(
         
         if export_video_for_debug:
             video_output_path = os.path.join(video_output_dir, f"video_{counter}.mp4")
-            print("Exporting video to: ", video_output_path)
+            print(f"Exporting video to: {video_output_path}")
             export_to_video(full_video, video_output_path, fps=16)
 
         for frame_img in full_video:

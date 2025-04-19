@@ -26,7 +26,8 @@ from xfuser.core.distributed.parallel_state import (init_distributed_environment
                                                     get_world_group,
                                                     get_vae_parallel_group)
 
-from ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times
+from utils.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times
+from utils.log_utils import logger_info as print
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage4.cogvideox.parallel_vae_utils import VAEParallelState
@@ -92,7 +93,7 @@ class ParallelVAEWrapper:
         rank = get_world_group().rank
         # print(f"Rank {rank} is running the VAE")
         latents = latents.to(self.vae.device)
-        print(f"(RANK {rank})input of vae worker: ", latents.shape)
+        print(f"(RANK {rank})input of vae worker: {latents.shape=}")
         frames = self.decode_latents(latents)
         return frames
 
@@ -250,7 +251,7 @@ class ParallelVAEWorker(WorkerBase):
             print(f"[ParallelVAEWorker.send_frames] Rank {self.rank} is sending the frames")
             if torch.is_tensor(frames):
                 frames = frames.to(torch.device('cpu'))  # move the frames to CPU before sending via ray
-                print("[ParallelVAEWorker.send_frames] frames shape: ", frames.shape)
+                print(f"[ParallelVAEWorker.send_frames] frames shape: {frames.shape}")
                 self._send_frames(frames, blocking=True, timestamps=batch_timestamps)
             else:
                 assert isinstance(frames, list), "frames should be a list of images in numpy array format"
@@ -414,9 +415,9 @@ class PostProcessorWorker(WorkerBase):
             full_image_list = [self.last_image] + image_list
         else:
             full_image_list = image_list
-        print("[PostProcessorWorker.execute] {len(full_image_list)=}")
+        print(f"[PostProcessorWorker.execute] {len(full_image_list)=}")
         post_image_list = self.postprocess(full_image_list)
-        print("[PostProcessorWorker.execute] {len(post_image_list)=}")
+        print(f"[PostProcessorWorker.execute] {len(post_image_list)=}")
         if self.frame_interpolator is not None and self.last_image is not None:
             post_image_list = post_image_list[1:]
         self.last_image = post_image_list[-1]

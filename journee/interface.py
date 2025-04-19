@@ -1,7 +1,8 @@
 import time
 
 import ray
-from .ray_pipeline_utils import add_timestamp, get_data_and_timestamps, get_passed_times, passed_times_dict_to_str
+from .utils.ray_pipeline_utils import add_timestamp, get_data_and_timestamps, get_passed_times, passed_times_dict_to_str
+from .utils.log_utils import logger_info as print
 
 class QueueInterface:
     def __init__(

@@ -3,8 +3,6 @@ import time
 
 import numpy as np
 import pyglet
-import logging 
-import logfire
 from wmk.messenger import Messenger
 from wmk.player import Player
 
@@ -28,6 +26,7 @@ def init_model():
     return DummyModel(), DummyQueue(), DummyQueue() # model, frame_queue, control_queue
 #============ Interfaces with the backend model ===========#
 from journee.interface import init_model, passed_times_dict_to_str
+from journee.utils.log_utils import logger
 
 WIDTH = 720
 HEIGHT = 480
@@ -44,21 +43,6 @@ BLUE_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
 BLUE_FRAME[:,:] = [99, 99, 200]
 WHITE_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
 WHITE_FRAME[:,:] = [200, 200, 200]
-
-def setup_logging():
-    # Configure Logfire to send logs to the Logfire service.
-    # This is optional, but very helpful for debugging deployed applications.
-    logfire.configure(token='YOUR_LOGFIRE_TOKEN')
-    logging.basicConfig(handlers=[logfire.LogfireLoggingHandler()])
-
-    # Ensure we display INFO logs.
-    logging.basicConfig(level=logging.INFO)
-    # Create our standard logger.
-    logger = logging.getLogger(__name__)
-    logger.setLevel(logging.INFO)
-    return logger
-
-logger = setup_logging()
 
 def init_messenger():
     global is_connected

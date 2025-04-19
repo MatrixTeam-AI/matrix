@@ -1,7 +1,8 @@
 import argparse
 import time
 import ray
-from ray_pipeline_utils import QueueManager, SharedVar, timer
+from utils.ray_pipeline_utils import QueueManager, SharedVar, timer
+from utils.log_utils import logger_info as print
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create Ray queues and shared variables.")
@@ -16,7 +17,7 @@ if __name__ == "__main__":
     vae2post_queue = QueueManager.options(namespace='matrix', name="vae2post_queue").remote()  # VAE --> Postprocessing
     post2front_queue = QueueManager.options(namespace='matrix', name="post2front_queue").remote()  # Postprocessing --> front end
     actors = ray.util.list_named_actors(all_namespaces=True)
-    print("Actors in all namespaces: ", [actor_name for actor_name in actors])
+    print(f"Actors in all namespaces: {[actor_name for actor_name in actors]}")
     
     # === IMPORTANT NOTE ===
     # These queues and shared variables are Ray actors. If the main process exits right after creating them,

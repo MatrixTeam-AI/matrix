@@ -57,7 +57,8 @@ from xfuser.core.distributed import (
 )
 from xfuser.core.distributed.group_coordinator import GroupCoordinator
 import torch.cuda.nvtx as nvtx
-from journee.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times, add_timestamp_to_each_item
+from journee.utils.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times, add_timestamp_to_each_item
+from journee.utils.log_utils import logger_info as print
 # ============================
 
 EXAMPLE_DOC_STRING = """
@@ -1077,7 +1078,9 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         # wait for the preparation of VAE
         torch.cuda.synchronize()
         if group_idx == 1:
-            time.sleep(30)
+            vae_warmup_time = 30
+            self.print(f"Waiting {vae_warmup_time} seconds for VAE warmup...")
+            time.sleep(vae_warmup_time)
         time.sleep(sec)
 
     @torch.no_grad()
@@ -1352,7 +1355,10 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             torch.cuda.synchronize()
             group_end_time = time.time()
             self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")
-        self.print('Average seconds per group: ', np.mean(list(streaming_time_info.values())[1:]), 'var: ', np.var(list(streaming_time_info.values())[1:]))  # discard first one because the latency is usually high
+        self.print(
+            f'Average seconds per group: {np.mean(list(streaming_time_info.values())[1:])}, '
+            f'var: {np.var(list(streaming_time_info.values())[1:])}'
+        )  # discard first one because the latency is usually high
 
         # Offload all models
         self.maybe_free_model_hooks()

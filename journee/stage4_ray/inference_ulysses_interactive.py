@@ -41,6 +41,7 @@ from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage4.cogvideox.scheduler import LCMSwinScheduler
 from stage4.cogvideox.parallel_vae_utils import VAEParallelState
+from journee.utils.log_utils import logger_info as print
 
 def generate_random_control_signal(
         length, seed, repeat_lens=[2, 2, 2], signal_choices=['D', 'DR', 'DL'],

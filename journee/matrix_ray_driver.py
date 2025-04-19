@@ -17,7 +17,8 @@ from xfuser.ray.pipeline.pipeline_utils import GPUExecutor
 from xfuser.ray.worker.worker_wrappers import RayWorkerWrapper
 
 from matrix_ray_worker import EngineConfig, ParallelConfig
-from ray_pipeline_utils import timer
+from utils.ray_pipeline_utils import timer
+from utils.log_utils import logger_info as print
 
 class RayMatrixPipeline(GPUExecutor):
     runtime_env = {}
@@ -27,7 +28,7 @@ class RayMatrixPipeline(GPUExecutor):
     
     def _init_executor(self):
         self._init_ray_workers()
-        print(self.workers)
+        print(f"[RayMatrixPipeline._init_executor] {self.workers=}")
         self._run_workers(self.workers,"init_worker_distributed_environment")
 
     def _init_ray_workers(self):
@@ -59,11 +60,11 @@ class RayMatrixPipeline(GPUExecutor):
             )
             
             if bundle_id < dit_parallel_size:
-                print("bundle_id: ", bundle_id, " is DiT worker")
+                print(f"bundle_id: {bundle_id} is DiT worker")
                 #TODO: Include DiT workers support later
                 raise NotImplementedError("Not implemented yet for dit workers")
             elif bundle_id < dit_parallel_size + vae_parallel_size:
-                print("bundle_id: ", bundle_id, " is VAE worker")
+                print(f"bundle_id: {bundle_id} is VAE worker")
                 # the rest of them are VAE workers
                 worker = ray.remote(
                     num_cpus=0,
@@ -77,7 +78,7 @@ class RayMatrixPipeline(GPUExecutor):
                 )
                 self.vae_workers.append(worker)
             elif bundle_id < dit_parallel_size + vae_parallel_size + post_parallel_size:
-                print("bundle_id: ", bundle_id, " is Postprocessor worker")
+                print(f"bundle_id: {bundle_id} is Postprocessor worker")
                 worker = ray.remote(
                     num_cpus=0,
                     num_gpus=1,
@@ -195,7 +196,7 @@ def test_vae_and_post_processor():
         with timer(f"Decoding {latents.size(1)} latents by VAE"):
             frames = matrix_ray_pipline.call_vae(latents=latents[:, i:i+num_latents])[0]  # only the rank 0 worker will return the results
         frames = frames[:, :, 4:]
-        print(frames.shape)
+        print(f"{frames.shape=}")
         if parallel_config.post_parallel_size > 0:  # if there is postprocessor workers
             full_video = matrix_ray_pipline.call_postprocessor(frames=frames)
             full_video = full_video[0]  # the return of the ray workers is a list. There is only one postprocessor so we get the first element (also the only element)
@@ -206,7 +207,7 @@ def test_vae_and_post_processor():
             with timer(f"Postprocessing {latents.size(1)} latents"):
                 full_video = video_processor.postprocess_video(video=frames, output_type='pil')
         video_output_path = os.path.join(video_output_dir, f"video_{i}.mp4")
-        print("Exporting video to: ", video_output_path)
+        print(f"Exporting video to: {video_output_path}")
         export_to_video(full_video, video_output_path, fps=16)
 
 def test_dit():
