@@ -1,4 +1,5 @@
 import os
+import sys
 import logging
 import logfire
 
@@ -19,7 +20,6 @@ def setup_logging():
         'logfire_token.txt'
     )
     logfire_token = read_logfire_token(logfire_token_file)
-    print(f"{logfire_token=}")
     logfire.configure(token=logfire_token)
     logging.basicConfig(handlers=[logfire.LogfireLoggingHandler()])
 
@@ -30,5 +30,28 @@ def setup_logging():
     logger.setLevel(logging.INFO)
     return logger
 
+class StdWrapper:
+    def __init__(self, original_std, logger, level):
+        self.original_std = original_std
+        self.logger = logger
+        self.level = level
+        self.buffer = ""
+
+    def write(self, message):
+        self.buffer += message
+        while '\n' in self.buffer:
+            line, self.buffer = self.buffer.split('\n', 1)
+            if line.rstrip() != "":
+                self.logger.log(self.level, line.rstrip())
+
+    def flush(self):
+        if self.buffer.rstrip() != "":
+            self.logger.log(self.level, self.buffer.rstrip())
+            self.buffer = ""
+
+    def __getattr__(self, attr):
+        return getattr(self.original_std, attr)
+
 logger = setup_logging()
-logger_info = logger.info
+sys.stdout = StdWrapper(sys.stdout, logger, logging.INFO)
+sys.stderr = StdWrapper(sys.stderr, logger, logging.ERROR)

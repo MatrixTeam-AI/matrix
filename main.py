@@ -1,3 +1,4 @@
+from journee.utils.log_utils import logger
 import os
 import time
 
@@ -26,7 +27,6 @@ def init_model():
     return DummyModel(), DummyQueue(), DummyQueue() # model, frame_queue, control_queue
 #============ Interfaces with the backend model ===========#
 from journee.interface import init_model, passed_times_dict_to_str
-from journee.utils.log_utils import logger
 
 WIDTH = 720
 HEIGHT = 480

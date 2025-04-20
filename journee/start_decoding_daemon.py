@@ -8,11 +8,11 @@ import ray
 from diffusers.utils import export_to_video, load_image, load_video
 from diffusers.video_processor import VideoProcessor
 
+import utils.log_utils
 from matrix_ray_worker import EngineConfig, ParallelConfig
 from matrix_ray_driver import RayMatrixPipeline
 from utils.ray_pipeline_utils import QueueManager, timer
-from utils.log_utils import logger_info as print
-    
+
 def debug_daemon(
     matrix_ckpt_path: str,
     frame_interpolator_model_path: str,

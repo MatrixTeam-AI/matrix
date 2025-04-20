@@ -58,7 +58,6 @@ from xfuser.core.distributed import (
 from xfuser.core.distributed.group_coordinator import GroupCoordinator
 import torch.cuda.nvtx as nvtx
 from journee.utils.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times, add_timestamp_to_each_item
-from journee.utils.log_utils import logger_info as print
 # ============================
 
 EXAMPLE_DOC_STRING = """

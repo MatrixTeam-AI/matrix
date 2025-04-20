@@ -7,7 +7,6 @@ import torch.distributed as dist
 import ray
 from ray.util.queue import Queue
 
-from .log_utils import logger_info as print
 
 @contextmanager
 def timer(label="Block", if_print=True, print_rank=0):

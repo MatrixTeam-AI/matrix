@@ -36,12 +36,12 @@ from diffusers.utils import export_to_video
 import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
+import journee.utils.log_utils
 from pipeline_cogvideox_interactive  import CogVideoXInteractiveStreamingPipeline
 from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage4.cogvideox.scheduler import LCMSwinScheduler
 from stage4.cogvideox.parallel_vae_utils import VAEParallelState
-from journee.utils.log_utils import logger_info as print
 
 def generate_random_control_signal(
         length, seed, repeat_lens=[2, 2, 2], signal_choices=['D', 'DR', 'DL'],

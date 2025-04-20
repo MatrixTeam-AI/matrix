@@ -8,6 +8,7 @@ GPU_IDS=0
 for ((i=1; i<NUM_GPUS; i++)); do
   GPU_IDS="$GPU_IDS,$i"
 done
+python utils/send_msg_to_logger.py --message "GPU_IDS: $GPU_IDS"
 
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 set -x

@@ -18,7 +18,6 @@ from xfuser.ray.worker.worker_wrappers import RayWorkerWrapper
 
 from matrix_ray_worker import EngineConfig, ParallelConfig
 from utils.ray_pipeline_utils import timer
-from utils.log_utils import logger_info as print
 
 class RayMatrixPipeline(GPUExecutor):
     runtime_env = {}

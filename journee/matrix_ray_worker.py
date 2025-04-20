@@ -27,7 +27,6 @@ from xfuser.core.distributed.parallel_state import (init_distributed_environment
                                                     get_vae_parallel_group)
 
 from utils.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times
-from utils.log_utils import logger_info as print
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
 from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
 from stage4.cogvideox.parallel_vae_utils import VAEParallelState

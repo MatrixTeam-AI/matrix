@@ -1,8 +1,8 @@
 import argparse
 import time
 import ray
+import utils.log_utils
 from utils.ray_pipeline_utils import QueueManager, SharedVar, timer
-from utils.log_utils import logger_info as print
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create Ray queues and shared variables.")
