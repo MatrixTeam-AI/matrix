@@ -35,8 +35,8 @@ from diffusers.utils import export_to_video
 
 import os
 import sys
-sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-2]))
-import journee.utils.log_utils
+sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
+from journee.utils import log_utils
 from pipeline_cogvideox_interactive  import CogVideoXInteractiveStreamingPipeline
 from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
