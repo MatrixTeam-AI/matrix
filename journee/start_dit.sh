@@ -2,6 +2,7 @@
 # This file is modified from https://github.com/xdit-project/xDiT/blob/0.4.1/examples/run_cogvideo.sh
 DEFAULT_NUM_GPUS=1
 NUM_GPUS=${1:-$DEFAULT_NUM_GPUS}
+MODEL_PATH=$2
 
 # generate string "0,1,...,NUM_GPUS-1"
 GPU_IDS=0
@@ -19,7 +20,7 @@ echo $PYTHONPATH
 
 export NCCL_BUFFSIZE=1048576  # for 24 GB memory, the default 32MB NCCL buffer per channel would be too large and cause OOM (These memory wouldn't be released by `torch.cuda.empty_cache()`)
 CUDA_VISIBLE_DEVICES=$GPU_IDS; torchrun --nnodes 1 --nproc-per-node $NUM_GPUS --master-port 29501 ./stage4_ray/inference_ulysses_interactive.py \
---model_path "../models/stage3" \
+--model_path "$MODEL_PATH" \
 --output_path ../samples/journee/dit_debug/output.mp4 \
 --prompt "The video shows a white car driving on a country road on a sunny day. The car comes from the back of the scene, moving forward along the road, with open fields and distant hills surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. The entire video records the car's journey through the natural environment using a follow-shot technique." \
 --image_or_video_path ../base_video.mp4 \
@@ -31,4 +32,5 @@ CUDA_VISIBLE_DEVICES=$GPU_IDS; torchrun --nnodes 1 --nproc-per-node $NUM_GPUS --
 --height 480 \
 --width 720 \
 --warmup_steps 0 \
---init_video_clip_frame 17
+--init_video_clip_frame 17 \
+--wait_vae_seconds 0 &

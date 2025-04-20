@@ -1080,7 +1080,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             vae_warmup_time = 30
             self.print(f"Waiting {vae_warmup_time} seconds for VAE warmup...")
             time.sleep(vae_warmup_time)
-        time.sleep(sec)
+        if sec > 0:
+            time.sleep(sec)
 
     @torch.no_grad()
     def __call__(
@@ -1110,6 +1111,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         num_noise_groups=4,  # number of noise group number
         num_sample_groups=8,  # number of outer sampling loop, and each iteration output a group of video tokens.
         with_frame_cond=True,  # whether to use frame condition, if ture the first frame is used as condition with zero noise.
+        wait_vae_seconds=0.,
         **kwargs
     ):
         assert isinstance(self.scheduler, LCMSwinScheduler)
@@ -1350,7 +1352,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
                 batch_timestamps = self.pop_timestamps(window_size, with_frame_cond)
                 self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
             with timer(label=f"[RANK {self.rank}]: Waiting"):
-                self.wait(group_idx, sec=0.02)  # wait for the preparation of VAE
+                self.wait(group_idx, sec=wait_vae_seconds)  # wait for the preparation of VAE
             torch.cuda.synchronize()
             group_end_time = time.time()
             self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")

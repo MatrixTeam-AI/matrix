@@ -1,4 +1,5 @@
-from journee.utils.log_utils import logger
+from journee.utils.log_utils import redirect_stdout_err_to_logger, logger
+redirect_stdout_err_to_logger(logger)
 import os
 import time
 
@@ -118,19 +119,21 @@ class FrameManager:
         # a simple implementation
         frame = self.last_frame
         self.last_frame_time += dt
-        logger.info(
-            f"[main.FrameManager.get]"
-            f" dt: {dt:.3f}s, last_frame_time: {self.last_frame_time:.3f}s"
-            f" {self.frame_queue.size()=}"
-        )
+        # logger.info(
+        #     f"[main.FrameManager.get]"
+        #     f" dt: {dt:.3f}s, last_frame_time: {self.last_frame_time:.3f}s"
+        #     f" {self.frame_queue.size()=}"
+        # )
         if (
             (self.last_frame is None or self.last_frame_time >= self.video_dt)
             and (if_wait_empty or not self.frame_queue.empty())
         ):
-            logger.info(f"[main.FrameManager.get] Getting frame...")
+            # logger.info(f"[main.FrameManager.get] Getting frame...")
             frame, passed_times = self.frame_queue.get()
             passed_times_str = passed_times_dict_to_str(passed_times)
-            logger.info(f"[main.FrameManager.get] Got frame! passed_times:\n{passed_times_str}")
+            global frame_counter
+            if frame_counter % 30 == 0:
+                logger.info(f"[main.FrameManager.get] Got frame! passed_times:\n{passed_times_str}")
             frame = frame[::-1] # flip the H dimension for wmk
             self.last_frame = frame
             self.last_frame_time = dt
@@ -159,16 +162,16 @@ class ControlManager:
         """
         # a simple implementation
         self.last_control_time += dt
-        logger.info(
-            f"[main.ControlManager.put]"
-            f" dt: {dt:.3f}s, last_control_time: {self.last_control_time:.3f}s"
-            f" {self.control_queue.size()=}"
-        )
+        # logger.info(
+        #     f"[main.ControlManager.put]"
+        #     f" dt: {dt:.3f}s, last_control_time: {self.last_control_time:.3f}s"
+        #     f" {self.control_queue.size()=}"
+        # )
         if (
             self.last_control_time >= self.control_dt
             and not check_full or not self.control_queue.full()
         ):
-            logger.info(f"[main.ControlManager.put] Putting control...")
+            # logger.info(f"[main.ControlManager.put] Putting control...")
             self.control_queue.put(control) #TODO: may need to modify the interface of `control_queue`
             self.last_control_time = dt
 

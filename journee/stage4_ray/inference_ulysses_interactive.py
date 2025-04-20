@@ -36,7 +36,8 @@ from diffusers.utils import export_to_video
 import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
-from journee.utils import log_utils
+from journee.utils.log_utils import redirect_stdout_err_to_logger, logger
+# redirect_stdout_err_to_logger(logger)
 from pipeline_cogvideox_interactive  import CogVideoXInteractiveStreamingPipeline
 from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
 from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
@@ -153,6 +154,7 @@ def generate_video(
     init_video_clip_frame: int = 65,
     original_inference_steps: int = 40,
     lcm_multiplier: int = 1,
+    wait_vae_seconds: float = 0.,
 ):
     """
     Generates a video based on the given prompt and saves it to the specified path.
@@ -205,6 +207,7 @@ def generate_video(
             num_sample_groups=num_sample_groups,
             original_inference_steps=original_inference_steps,
             lcm_multiplier=lcm_multiplier,
+            wait_vae_seconds=wait_vae_seconds,
         )
 
 def add_argument_overridable(parser, *args, **kwargs):
@@ -264,6 +267,7 @@ def main():
     # parallel arguments
     add_argument_overridable(parser, "--split_text_embed_in_sp", type=str, default="true", choices=["true", "false", "auto"], help="Whether to split text embed `encoder_hidden_states` for sequence parallel.")
     add_argument_overridable(parser, "--parallel_decoding_idx", type=int, default=-1, choices=[-1, 0, 1, 2, 3], help="Upblock index in VAE.decoder to enable parallel decoding. -1 means disabling parallel decoding.")
+    add_argument_overridable(parser, "--wait_vae_seconds", type=float, default=0, help="Time that DiT wait for VAE.")
     args = parser.parse_args()
 
     engine_args = xFuserArgs.from_cli_args(args)
@@ -343,6 +347,7 @@ def main():
         init_video_clip_frame=args.init_video_clip_frame,
         original_inference_steps=args.original_inference_steps,
         lcm_multiplier = args.lcm_multiplier,
+        wait_vae_seconds = args.wait_vae_seconds,
     )
     end_time = time.time()
     elapsed_time = end_time - start_time

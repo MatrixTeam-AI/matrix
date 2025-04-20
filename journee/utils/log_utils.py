@@ -1,5 +1,4 @@
 import os
-import sys
 import logging
 import logfire
 
@@ -52,6 +51,9 @@ class StdWrapper:
     def __getattr__(self, attr):
         return getattr(self.original_std, attr)
 
+def redirect_stdout_err_to_logger(logger):
+    import sys
+    sys.stdout = StdWrapper(sys.stdout, logger, logging.INFO)
+    sys.stderr = StdWrapper(sys.stderr, logger, logging.ERROR)
+
 logger = setup_logging()
-sys.stdout = StdWrapper(sys.stdout, logger, logging.INFO)
-sys.stderr = StdWrapper(sys.stderr, logger, logging.ERROR)
