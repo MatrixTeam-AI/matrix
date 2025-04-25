@@ -120,6 +120,11 @@ class ParallelVAEWorker(WorkerBase):
             # receive data from dit2vae_latents_queue, send data to vae2post_latents_queue
             if not hasattr(self, 'recv_dit2vae_queue_manager'):
                 self.recv_dit2vae_queue_manager = ray.get_actor("dit2vae_queue", namespace='matrix')
+            if not hasattr(self, 'vae_step_var'):
+                self.vae_step = 0
+                self.vae_step_var = ray.get_actor("vae_step_var", namespace='matrix')
+            if not hasattr(self, 'dit_step_var'):
+                self.dit_step_var = ray.get_actor("dit_step_var", namespace='matrix')
             if not hasattr(self, 'send_vae2post_queue_manager'):
                 if self.if_send_to_front:
                     self.send_vae2post_queue_manager = ray.get_actor("post2front_queue", namespace='matrix')
@@ -307,10 +312,24 @@ class ParallelVAEWorker(WorkerBase):
                 if_print=self.rank == self.parallel_config.dit_parallel_size,
             ):
                 frames = self.execute(latents=latents)
+
+            if self.rank == self.parallel_config.dit_parallel_size:
+                self.vae_step += 1
+                self.vae_step_var.set.remote(new_value = self.vae_step)
             # Repeat timestamps for each frame
             if batch_timestamps is not None:
                 batch_timestamps = self.repeat_batch_timestamps(batch_timestamps, repeat=4)
             # Only the first worker will send the frames to the postprocessor queue  
+            if self.rank == self.parallel_config.dit_parallel_size:
+                with timer(label=f"[RANK {self.rank}]: Waiting"):
+                    while(True):
+                        dit_step = ray.get(self.dit_step_var.get.remote())
+                        if(dit_step < self.vae_step):
+                            print(f"VAE PAUSED: DITSTEP {dit_step}, VAESTEP {self.vae_step}")
+                            torch.cuda.synchronize()
+                            time.sleep(0.003)
+                        else:
+                            break
             with timer(
                 label=f"[ParallelVAEWorker.background_loop] `self.send_frames`",
                 if_print=self.rank == self.parallel_config.dit_parallel_size,

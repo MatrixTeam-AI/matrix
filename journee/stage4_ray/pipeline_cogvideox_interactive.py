@@ -853,6 +853,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             ray.init(address='auto')  # connect to ray cluster
             self.queue_manager = ray.get_actor("dit2vae_queue", namespace='matrix')
             self.action_manager = ray.get_actor("action_queue", namespace='matrix') 
+            self.dit_step_var = ray.get_actor("dit_step_var", namespace='matrix')
+            self.vae_step_var = ray.get_actor("vae_step_var", namespace='matrix')
         
     def send_latents_to_queue(self, latents, batch_timestamps):
         if self.rank == 0:  # TODO: Try not to use ray.get to avoid blocking to save time?
@@ -1076,10 +1078,10 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
     def wait(self, group_idx, sec):
         # wait for the preparation of VAE
         torch.cuda.synchronize()
-        if group_idx == 1:
-            vae_warmup_time = 30
-            self.print(f"Waiting {vae_warmup_time} seconds for VAE warmup...")
-            time.sleep(vae_warmup_time)
+        # if group_idx == 1:
+        #     vae_warmup_time = 30
+        #     self.print(f"Waiting {vae_warmup_time} seconds for VAE warmup...")
+        #     time.sleep(vae_warmup_time)
         if sec > 0:
             time.sleep(sec)
 
@@ -1331,6 +1333,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             dit_end_time = time.time()
             streaming_time_info[f"Group_{group_idx}"] = (dit_end_time - dit_start_time)  # unit: second
             self.print(f"Group_{group_idx} DiT time: {dit_end_time - dit_start_time}")
+            if(self.rank == 0):
+                self.dit_step_var.set.remote(new_value=group_idx)
             with timer(label=f"[RANK {self.rank}]: Post-processing after DiT"):
                 if with_frame_cond:
                     latents_pop = latents[:, 1 : window_size + 1]
@@ -1351,8 +1355,18 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
                 batch_timestamps = self.pop_timestamps(window_size, with_frame_cond)
                 self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
-            with timer(label=f"[RANK {self.rank}]: Waiting"):
-                self.wait(group_idx, sec=wait_vae_seconds)  # wait for the preparation of VAE
+            if(self.rank == 0):
+                with timer(label=f"[RANK {self.rank}]: Waiting"):
+                    while(True):
+                        vae_step = ray.get(self.vae_step_var.get.remote())
+                        if(vae_step < group_idx - 1):
+                            print(f"DIT PAUSED: DITSTEP {group_idx}, VAESTEP {vae_step}")
+                            self.wait(group_idx, sec=0.003)
+                        else:
+                            break
+                    
+                # self.wait(group_idx, sec=wait_vae_seconds)  # wait for the preparation of VAE
+
             torch.cuda.synchronize()
             group_end_time = time.time()
             self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")

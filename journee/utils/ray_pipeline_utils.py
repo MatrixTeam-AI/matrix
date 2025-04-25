@@ -158,6 +158,17 @@ class SharedVar:
                 await self._condition.wait()
             return self.value
 
+@ray.remote
+class SharedReadOnlyVar:
+    def __init__(self, value=None):
+        self.value = value
+
+    def set(self, new_value):
+        self.value = new_value
+
+    def get(self):
+        return self.value
+
 # @ray.remote
 # class SharedVar:
 #     def __init__(self, value=None):
