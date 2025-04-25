@@ -3,7 +3,7 @@ import time
 import ray
 from utils.log_utils import redirect_stdout_err_to_logger, logger
 # redirect_stdout_err_to_logger(logger)
-from utils.ray_pipeline_utils import QueueManager, SharedVar, timer
+from utils.ray_pipeline_utils import QueueManager, SharedVar, SharedReadOnlyVar, timer
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create Ray queues and shared variables.")
