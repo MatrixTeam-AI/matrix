@@ -9,7 +9,7 @@ from diffusers.utils import export_to_video, load_image, load_video
 from diffusers.video_processor import VideoProcessor
 
 from utils.log_utils import redirect_stdout_err_to_logger, logger
-# redirect_stdout_err_to_logger(logger)
+redirect_stdout_err_to_logger(logger)
 from matrix_ray_worker import EngineConfig, ParallelConfig
 from matrix_ray_driver import RayMatrixPipeline
 from utils.ray_pipeline_utils import QueueManager, timer

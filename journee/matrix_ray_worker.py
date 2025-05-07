@@ -175,7 +175,12 @@ class ParallelVAEWorker(WorkerBase):
     def execute(self, **kwargs):
         frames = self.vae.execute(**kwargs)  # this will run `execute` of xxxWrapper
         if self.if_send_to_front:
-            frames = self.post_process(frames)
+            global_rank = get_world_group().rank
+            first_vae_worker_rank = self.parallel_config.dit_parallel_size
+            vae_parallel_size = self.parallel_config.vae_parallel_size
+            if vae_parallel_size == 1 or global_rank == first_vae_worker_rank:
+                frames = self.post_process(frames)
+        torch.distributed.barrier(group=get_vae_parallel_group())
         return frames
     
     def _get_latents(self):
@@ -330,6 +335,7 @@ class ParallelVAEWorker(WorkerBase):
                             time.sleep(0.003)
                         else:
                             break
+            torch.distributed.barrier(group=get_vae_parallel_group())
             with timer(
                 label=f"[ParallelVAEWorker.background_loop] `self.send_frames`",
                 if_print=self.rank == self.parallel_config.dit_parallel_size,

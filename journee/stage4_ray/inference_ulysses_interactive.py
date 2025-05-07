@@ -1,17 +1,32 @@
 # This file is modified from: https://github.com/xdit-project/xDiT/blob/main/examples/cogvideox_usp_example.py
+import os
+import sys
+sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
+from journee.utils.log_utils import redirect_stdout_err_to_logger, logger
+redirect_stdout_err_to_logger(logger)
+FILE_NAME = os.path.splitext(os.path.basename(__file__))[0]
+print(f"[{FILE_NAME}] {__file__} loaded")
+
 import functools
 from typing import List, Optional, Tuple, Union
 import argparse
-
 import gc
 import logging
 import time
+
 import torch
 import numpy as np
 import decord
 import PIL.Image
 
 from diffusers import DiffusionPipeline
+from diffusers.utils import export_to_video
+
+from pipeline_cogvideox_interactive  import CogVideoXInteractiveStreamingPipeline
+from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
+from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
+from stage4.cogvideox.scheduler import LCMSwinScheduler
+from stage4.cogvideox.parallel_vae_utils import VAEParallelState
 
 from xfuser import xFuserArgs
 from xfuser.config import FlexibleArgumentParser
@@ -28,21 +43,7 @@ from xfuser.core.distributed import (
     initialize_runtime_state,
     get_pipeline_parallel_world_size,
 )
-
-from diffusers.utils import export_to_video
-
 # from xfuser.model_executor.layers.attention_processor import xFuserCogVideoXAttnProcessor2_0
-
-import os
-import sys
-sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
-from journee.utils.log_utils import redirect_stdout_err_to_logger, logger
-# redirect_stdout_err_to_logger(logger)
-from pipeline_cogvideox_interactive  import CogVideoXInteractiveStreamingPipeline
-from stage4.cogvideox.transformer import CogVideoXTransformer3DModel
-from stage4.cogvideox.autoencoder import AutoencoderKLCogVideoX
-from stage4.cogvideox.scheduler import LCMSwinScheduler
-from stage4.cogvideox.parallel_vae_utils import VAEParallelState
 
 def generate_random_control_signal(
         length, seed, repeat_lens=[2, 2, 2], signal_choices=['D', 'DR', 'DL'],
@@ -88,11 +89,13 @@ def init_pipeline(
     enable_slicing: bool = True,
     parallel_decoding_idx: int = -1,
 ):
-    transformer = CogVideoXTransformer3DModel.from_pretrained(
+    transformer, transformer_loading_info = CogVideoXTransformer3DModel.from_pretrained(
         transformer_path or os.path.join(model_path, "transformer"),
         torch_dtype=dtype,
-        low_cpu_mem_usage=False
+        low_cpu_mem_usage=True,
+        output_loading_info=True,
     )
+    print(f"[{FILE_NAME}.init_pipeline] {transformer_loading_info=}")
     vae = AutoencoderKLCogVideoX.from_pretrained(
         os.path.join(model_path, "vae"),
         torch_dtype=dtype,
@@ -269,6 +272,7 @@ def main():
     add_argument_overridable(parser, "--parallel_decoding_idx", type=int, default=-1, choices=[-1, 0, 1, 2, 3], help="Upblock index in VAE.decoder to enable parallel decoding. -1 means disabling parallel decoding.")
     add_argument_overridable(parser, "--wait_vae_seconds", type=float, default=0, help="Time that DiT wait for VAE.")
     args = parser.parse_args()
+    print(f"[{FILE_NAME}.main] args parsed: {args}")
 
     engine_args = xFuserArgs.from_cli_args(args)
     engine_config, input_config = engine_args.create_config()

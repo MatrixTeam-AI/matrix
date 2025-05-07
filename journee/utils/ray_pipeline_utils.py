@@ -9,7 +9,7 @@ from ray.util.queue import Queue
 
 
 @contextmanager
-def timer(label="Block", if_print=True, print_rank=0):
+def timer(label="Block", if_print=True, print_rank=0, print_fn=print):
     start_time = time.perf_counter()
     yield
     if torch.cuda.is_available():
@@ -17,7 +17,7 @@ def timer(label="Block", if_print=True, print_rank=0):
     end_time = time.perf_counter()
     
     if if_print and (not dist.is_initialized() or dist.get_rank() == print_rank):
-        print(f"{label} took {end_time - start_time:.6f} seconds")
+        print_fn(f"{label} took {end_time - start_time:.6f} seconds")
 
 ADD_TIMESTAMP = True
 

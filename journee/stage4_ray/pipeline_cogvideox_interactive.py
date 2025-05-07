@@ -1350,12 +1350,12 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
                     latents_remain = latents[:, window_size:]
                     latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
                     latents = latents_new
-            with timer(label=f"[RANK {self.rank}]: Moving latents to CPU"):
-                latents_pop_cpu = latents_pop.to('cpu')
-            with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
-                batch_timestamps = self.pop_timestamps(window_size, with_frame_cond)
-                self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
-            if(self.rank == 0):
+            if self.rank == 0:
+                with timer(label=f"[RANK {self.rank}]: Moving latents to CPU"):
+                    latents_pop_cpu = latents_pop.to('cpu')
+                with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
+                    batch_timestamps = self.pop_timestamps(window_size, with_frame_cond)
+                    self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
                 with timer(label=f"[RANK {self.rank}]: Waiting"):
                     while(True):
                         vae_step = ray.get(self.vae_step_var.get.remote())
@@ -1366,7 +1366,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
                             break
                     
                 # self.wait(group_idx, sec=wait_vae_seconds)  # wait for the preparation of VAE
-
+            torch.distributed.barrier()
             torch.cuda.synchronize()
             group_end_time = time.time()
             self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")

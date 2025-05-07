@@ -112,7 +112,7 @@ class FrameManager:
         self.last_frame_time = 100. # a big enough number to make sure the first frame is displayed
         self.video_dt = 1 / self.video_fps
 
-    def get(self, dt, if_wait_empty=False):
+    def get(self, dt, if_wait_nonempty=False):
         """
         dt: Time elapsed since last update in seconds
         """
@@ -126,13 +126,13 @@ class FrameManager:
         # )
         if (
             (self.last_frame is None or self.last_frame_time >= self.video_dt)
-            and (if_wait_empty or not self.frame_queue.empty())
+            and (if_wait_nonempty or not self.frame_queue.empty())
         ):
             # logger.info(f"[main.FrameManager.get] Getting frame...")
             frame, passed_times = self.frame_queue.get()
             passed_times_str = passed_times_dict_to_str(passed_times)
             global frame_counter
-            if frame_counter % 30 == 0:
+            if frame_counter % 1 == 0:
                 logger.info(f"[main.FrameManager.get] Got frame! passed_times:\n{passed_times_str}")
             frame = frame[::-1] # flip the H dimension for wmk
             self.last_frame = frame
@@ -202,7 +202,7 @@ def generate_frames(player: Player, dt: float):
     # Get the frame to display
     frame = frame_manager.get(
         dt,
-        if_wait_empty=True, # blocking
+        if_wait_nonempty=True, # blocking
     )
     
     # when no frame is available, we display a color frame
