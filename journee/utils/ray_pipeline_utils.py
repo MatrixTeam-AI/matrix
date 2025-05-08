@@ -7,6 +7,9 @@ import torch.distributed as dist
 import ray
 from ray.util.queue import Queue
 
+### set print to a dummy function ###
+# def print(*args, **kwargs):
+#     pass
 
 @contextmanager
 def timer(label="Block", if_print=True, print_rank=0, print_fn=print):
@@ -112,19 +115,19 @@ def passed_times_dict_to_str(passed_times):
 @ray.remote(num_cpus=1, max_concurrency=3)
 class QueueManager:
     def __init__(self, maxsize=0):
-        print("QueueManager initialized!")
+        print(f"QueueManager initialized! {maxsize=}")
         self.queue = Queue(maxsize=maxsize)
 
     def put(self, item):
-        print(f"[QueueManager] put() called")
+        # print(f"[QueueManager] put() called")
         self.queue.put(item)
 
     def get(self):
-        print(f"[QueueManager] get() called")
+        # print(f"[QueueManager] get() called")
         return self.queue.get()
 
     def get_all(self):
-        print(f"[QueueManager] get_all() called")
+        # print(f"[QueueManager] get_all() called")
         size = self.queue.size()
         return self.queue.get_nowait_batch(size)
 

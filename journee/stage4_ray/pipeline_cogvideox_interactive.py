@@ -58,6 +58,9 @@ from xfuser.core.distributed import (
 from xfuser.core.distributed.group_coordinator import GroupCoordinator
 import torch.cuda.nvtx as nvtx
 from journee.utils.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times, add_timestamp_to_each_item
+### set print to a dummy function ###
+# def print(*args, **kwargs):
+#     pass
 # ============================
 
 EXAMPLE_DOC_STRING = """
@@ -911,7 +914,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             torch.distributed.broadcast(cur_action_id_tensor, src=0, group=self.dit_process_group.device_group)
             # Convert the action id to action string
             current_action = self.idx_to_control_signal[cur_action_id_tensor.item()]
-            
+        torch.distributed.barrier()
         self.print(f"current_action: {current_action}")
         assert current_action in ["D", "DR", "DL", "N", "B"], f"Invalid action input: {current_action}"
         return current_action, timestamps
@@ -1020,7 +1023,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         else:
             action_window = []
             timestamps_window = []
-            self.fetch_all_actions(window_size)
+            with timer(label=f"[RANK {self.rank}]: `self.fetch_all_actions`"):
+                self.fetch_all_actions(window_size)
             for _ in range(window_size):
                 # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
                 action, timestamps = self.get_current_action()
@@ -1031,8 +1035,7 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             if self.model_input_action_timestamps is not None:
                 self.model_input_action_timestamps.extend(timestamps_window)
                 self.model_input_action_timestamps = self.model_input_action_timestamps[-num_latent_frames:]
-        if self.rank:
-            self.print(f"Current actions: {self.model_input_actions}")
+        self.print(f"Current actions: {self.model_input_actions}")
         control_indices = [self.control_signal_to_idx[action] for action in self.model_input_actions] 
         control = self.control_embeddings[control_indices]
         return control
@@ -1256,10 +1259,11 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         streaming_time_info = {}
         self.print("Starting streaming video prediction...")
         for group_idx in range(outer_steps):
-            self.print(f"Computing the {group_idx + 1}th/{num_sample_groups} group of video tokens...")
+            self.print(f"Computing the {group_idx}th/{num_sample_groups} group of video tokens...")
             group_start_time = time.time()
 
             # Control signal
+            self.print(f"[Group {group_idx}/{num_sample_groups}] Receiving control signal...")
             with timer(label=f"[RANK {self.rank}]: Receiving control signal"):
                 control_emb = self.get_control_from_signal_interactive(num_frames, window_size)
                 control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()

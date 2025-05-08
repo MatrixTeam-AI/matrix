@@ -3,7 +3,7 @@ import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
 from journee.utils.log_utils import redirect_stdout_err_to_logger, logger
-redirect_stdout_err_to_logger(logger)
+# redirect_stdout_err_to_logger(logger)
 FILE_NAME = os.path.splitext(os.path.basename(__file__))[0]
 print(f"[{FILE_NAME}] {__file__} loaded")
 

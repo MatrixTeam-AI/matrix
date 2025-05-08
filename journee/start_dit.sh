@@ -18,7 +18,7 @@ export PYTHONPATH=$PWD:$PYTHONPATH
 echo $PYTHONPATH
 # export HF_HOME="/mnt/world_model/longxiang/.cache/huggingface"
 
-export NCCL_BUFFSIZE=1048576  # for 24 GB memory, the default 32MB NCCL buffer per channel would be too large and cause OOM (These memory wouldn't be released by `torch.cuda.empty_cache()`)
+# export NCCL_BUFFSIZE=1048576  # for 24 GB memory, the default 32MB NCCL buffer per channel would be too large and cause OOM (These memory wouldn't be released by `torch.cuda.empty_cache()`)
 CUDA_VISIBLE_DEVICES=$GPU_IDS; torchrun --nnodes 1 --nproc-per-node $NUM_GPUS --master-port 29501 ./stage4_ray/inference_ulysses_interactive.py \
 --model_path "$MODEL_PATH" \
 --output_path ../samples/journee/dit_debug/output.mp4 \
@@ -33,4 +33,4 @@ CUDA_VISIBLE_DEVICES=$GPU_IDS; torchrun --nnodes 1 --nproc-per-node $NUM_GPUS --
 --width 720 \
 --warmup_steps 0 \
 --init_video_clip_frame 17 \
---wait_vae_seconds 0 &
+--wait_vae_seconds 0

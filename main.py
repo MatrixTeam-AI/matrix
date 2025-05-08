@@ -29,11 +29,42 @@ def init_model():
 #============ Interfaces with the backend model ===========#
 from journee.interface import init_model, passed_times_dict_to_str
 
+def random_control_signal_generator(
+        seed, 
+        repeat_lens=[2, 4, 4],
+        signal_choices=['D', 'DR', 'DL'],
+        change_prob_increment=0.2,
+    ):
+        if not signal_choices or not repeat_lens \
+            or len(repeat_lens) != len(signal_choices):
+            raise ValueError("Invalid parameters")
+        rng = np.random.default_rng(seed)
+        current_repeat = 0
+        current_idx = 0
+        change_prob = change_prob_increment
+        while True:
+            if current_repeat >= repeat_lens[current_idx]:
+                if change_prob >= 1 or rng.uniform(0, 1) < change_prob:
+                    if current_idx == 0:
+                        current_idx_choices = [j for j in range(1, len(signal_choices))]
+                        current_idx = rng.choice(current_idx_choices)
+                    else:
+                        current_idx = 0
+                    current_repeat = 1
+                    change_prob = change_prob_increment
+                else:
+                    current_repeat += 1
+                    change_prob = min(1, change_prob + change_prob_increment)
+            else:
+                current_repeat += 1
+            yield signal_choices[current_idx]
+
 WIDTH = 720
 HEIGHT = 480
 VIDEO_FPS = 1000
 CONTROL_FPS = 1000
-DISPLAY_FPS = 31 # determine the frequency to update frame and control signals
+DISPLAY_FPS = 18 # determine the frequency to update frame and control signals
+CONTROL_GENERATOR = random_control_signal_generator(0)
 
 # Pre-create the frames for default cases. 
 RED_FRAME = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
@@ -132,8 +163,8 @@ class FrameManager:
             frame, passed_times = self.frame_queue.get()
             passed_times_str = passed_times_dict_to_str(passed_times)
             global frame_counter
-            if frame_counter % 1 == 0:
-                logger.info(f"[main.FrameManager.get] Got frame! passed_times:\n{passed_times_str}")
+            # if frame_counter % 1 == 0:
+            #     logger.info(f"[main.FrameManager.get] Got frame! passed_times:\n{passed_times_str}")
             frame = frame[::-1] # flip the H dimension for wmk
             self.last_frame = frame
             self.last_frame_time = dt
@@ -177,6 +208,7 @@ class ControlManager:
 
 def generate_frames(player: Player, dt: float):
     global is_connected, frame_manager, control_manager, frame_counter
+    global CONTROL_GENERATOR
 
     # Collect control signals A/W/D.
     # 2 ways to check if a key is pressed:
@@ -192,18 +224,25 @@ def generate_frames(player: Player, dt: float):
     w_key_pressed = pyglet.window.key.W in player.keys_pressed
 
     # Get control and update control queue
-    control = 'D'   # Default. Move forward even if no key is pressed.
+    # control = 'D'   # Default. Move forward even if no key is pressed.
+    control = next(CONTROL_GENERATOR)
     if a_key_pressed:
         control = 'DL'
     elif d_key_pressed:
         control = 'DR'
+    elif w_key_pressed:
+        control = 'D'
     control_manager.put(control, dt, check_full=False)    # non-blocking
+    if frame_counter == 0:
+        logger.info(f"[main.generate_frames] send control {control} @ {frame_counter=}")
 
     # Get the frame to display
     frame = frame_manager.get(
         dt,
         if_wait_nonempty=True, # blocking
     )
+    if frame_counter == 0:
+        logger.info(f"[main.generate_frames] get frame @ {frame_counter=}")
     
     # when no frame is available, we display a color frame
     if frame is None:
@@ -251,6 +290,7 @@ def main():
         height=480,
         caption="The Matrix"
     )
+    logger.info('player.run')
     player.run()
 
 if __name__ == "__main__":

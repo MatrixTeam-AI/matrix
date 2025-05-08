@@ -35,6 +35,10 @@ try:
 except ImportError as e:
     print(f"ImportError: {e}")
 
+### set print to a dummy function ###
+# def print(*args, **kwargs):
+#     pass
+
 @dataclass
 class ParallelConfig:
     world_size: int = 1
@@ -216,15 +220,17 @@ class ParallelVAEWorker(WorkerBase):
                 dit2vae_qsize = ray.get(self.recv_dit2vae_queue_manager.size.remote())
                 print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the latents, {dit2vae_qsize=}")
                 latents = latents.to(dtype=dtype, device=device)  # move to GPU
+                torch.distributed.barrier(group=get_vae_parallel_group())
                 if not hasattr(self, 'shape_tensor'):
                     shape_len = torch.tensor([len(latents.shape)], dtype=torch.int, device=device)
                     shape_tensor = torch.tensor(latents.shape, dtype=torch.int, device=device)
                     
-                    print(f"[ParallelVAEWorker.get_latents] shape_len: {shape_len}, shape_tensor: {shape_tensor}")
+                    print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} shape_len: {shape_len}, shape_tensor: {shape_tensor}")
                     # Broadcast data to VAE group (makes all ranks in the vae group update their tensor to match the tensor on src rank.)
                     torch.distributed.broadcast(shape_len, src=global_rank, group=get_vae_parallel_group())  # use the default group to send the data
                     torch.distributed.broadcast(shape_tensor, src=global_rank, group=get_vae_parallel_group())
                     self.shape_tensor = shape_tensor
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is broadcasting the latents...")
                 torch.distributed.broadcast(latents, src=global_rank, group=get_vae_parallel_group())
                 _, batch_timestamps = add_timestamp(
                     label='VAE-broadcast-in-latent',
@@ -232,19 +238,21 @@ class ParallelVAEWorker(WorkerBase):
                     return_tuple=True,
                     timestamps=batch_timestamps,
                 )
-                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is broadcasting the latents")
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} broadcasted the latents")
             else:
-                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is waiting for the latents")
                 # Other VAE ranks receive broadcast
+                torch.distributed.barrier(group=get_vae_parallel_group())
                 if not hasattr(self, 'shape_tensor'):
                     shape_len = torch.zeros(1, dtype=torch.int, device=device)
                     torch.distributed.broadcast(shape_len, src=first_vae_worker_rank, group=get_vae_parallel_group())
                     shape_tensor = torch.zeros(shape_len[0], dtype=torch.int, device=device)
                     torch.distributed.broadcast(shape_tensor, src=first_vae_worker_rank, group=get_vae_parallel_group())
                     self.shape_tensor = shape_tensor
+                    print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} shape_len: {shape_len}, shape_tensor: {shape_tensor}")
                 latents = torch.zeros(torch.Size(self.shape_tensor), dtype=dtype, device=device)
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is waiting for the broadcasted latents...")
                 torch.distributed.broadcast(latents, src=first_vae_worker_rank, group=get_vae_parallel_group())
-                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} is receiving the latents")
+                print(f"[ParallelVAEWorker.get_latents] Rank {global_rank} received the broadcasted latents")
         return latents, batch_timestamps
     
     def _send_frames(self, frames, blocking=True, timestamps=None):
@@ -317,21 +325,20 @@ class ParallelVAEWorker(WorkerBase):
                 if_print=self.rank == self.parallel_config.dit_parallel_size,
             ):
                 frames = self.execute(latents=latents)
-
-            if self.rank == self.parallel_config.dit_parallel_size:
-                self.vae_step += 1
-                self.vae_step_var.set.remote(new_value = self.vae_step)
+                
             # Repeat timestamps for each frame
             if batch_timestamps is not None:
                 batch_timestamps = self.repeat_batch_timestamps(batch_timestamps, repeat=4)
             # Only the first worker will send the frames to the postprocessor queue  
             if self.rank == self.parallel_config.dit_parallel_size:
+                self.vae_step += 1
+                self.vae_step_var.set.remote(new_value = self.vae_step)
                 with timer(label=f"[RANK {self.rank}]: Waiting"):
                     while(True):
                         dit_step = ray.get(self.dit_step_var.get.remote())
                         if(dit_step < self.vae_step):
                             print(f"VAE PAUSED: DITSTEP {dit_step}, VAESTEP {self.vae_step}")
-                            torch.cuda.synchronize()
+                            # torch.cuda.synchronize()
                             time.sleep(0.003)
                         else:
                             break

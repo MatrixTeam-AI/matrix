@@ -12,15 +12,17 @@ def read_logfire_token(file_path):
         return "Dummy_Token"
     
 def setup_logging():
+    ############################################################
     # Configure Logfire to send logs to the Logfire service.
     # This is optional, but very helpful for debugging deployed applications.
-    logfire_token_file = os.path.join(
-        os.path.dirname(__file__), 
-        'logfire_token.txt'
-    )
-    logfire_token = read_logfire_token(logfire_token_file)
-    logfire.configure(token=logfire_token)
-    logging.basicConfig(handlers=[logfire.LogfireLoggingHandler()])
+    ##############################################################
+    # logfire_token_file = os.path.join(
+    #     os.path.dirname(__file__), 
+    #     'logfire_token.txt'
+    # )
+    # logfire_token = read_logfire_token(logfire_token_file)
+    # logfire.configure(token=logfire_token)
+    # logging.basicConfig(handlers=[logfire.LogfireLoggingHandler()])
 
     # Ensure we display INFO logs.
     logging.basicConfig(level=logging.INFO)
