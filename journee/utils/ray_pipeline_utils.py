@@ -112,7 +112,7 @@ def passed_times_dict_to_str(passed_times):
     passed_times_str = "\n".join([f" [{k}]: {v:.3f}s" for k, v in passed_times.items()])
     return passed_times_str
 
-@ray.remote(num_cpus=1, max_concurrency=3)
+@ray.remote(num_cpus=1, max_concurrency=10)
 class QueueManager:
     def __init__(self, maxsize=0):
         print(f"QueueManager initialized! {maxsize=}")

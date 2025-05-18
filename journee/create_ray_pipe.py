@@ -19,7 +19,8 @@ if __name__ == "__main__":
     post2front_queue = QueueManager.options(namespace='matrix', name="post2front_queue").remote()  # Postprocessing --> front end
     dit_step_var = SharedReadOnlyVar.options(namespace='matrix', name="dit_step_var").remote(value=0)
     vae_step_var = SharedReadOnlyVar.options(namespace='matrix', name="vae_step_var").remote(value=0)
-
+    current_state_var = SharedVar.options(namespace='matrix', name="current_state_var").remote(value=0)
+    
     actors = ray.util.list_named_actors(all_namespaces=True)
     print(f"Actors in all namespaces: {[actor_name for actor_name in actors]}")
     

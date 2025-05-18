@@ -13,15 +13,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import sys
 import inspect
 import math
-import random
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
-import sys
-import os
-
 import numpy as np
+
 import torch
+import torch.distributed
 from transformers import T5EncoderModel, T5Tokenizer
 
 from diffusers.callbacks import MultiPipelineCallbacks, PipelineCallback
@@ -30,6 +30,7 @@ from diffusers.pipelines.pipeline_utils import DiffusionPipeline
 from diffusers.utils import logging, replace_example_docstring
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.video_processor import VideoProcessor
+from transformers import AutoTokenizer, CLIPModel
 
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
 from stage4.cogvideox.pipelines.pipeline_output import CogVideoXPipelineOutput
@@ -44,13 +45,8 @@ from stage4.cogvideox.scheduler import (
 )
 from stage4.cogvideox.control_adapter import CONTROL_SIGNAL_TO_PROMPT
 
-from transformers import AutoTokenizer, CLIPModel
-
-from contextlib import nullcontext
-
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
 
-from dataclasses import dataclass, field, fields
 # ============================
 import gc
 import time
@@ -62,32 +58,32 @@ from xfuser.core.distributed import (
 from xfuser.core.distributed.group_coordinator import GroupCoordinator
 import torch.cuda.nvtx as nvtx
 from journee.utils.ray_pipeline_utils import timer, add_timestamp, get_data_and_timestamps, get_passed_times, add_timestamp_to_each_item
-from journee.stage4_ray.config import GenerationConfig, GenerationStepConfig, DecodeConfig
-from journee.generate_base_video import generate_base_video, fetch_base_video_path_by_prompt
-import decord
-import PIL.Image
 ### set print to a dummy function ###
 # def print(*args, **kwargs):
 #     pass
 # ============================
-EXAMPLE_DOC_STRING = ""
 
-def load_init_video_clip(
-    image_or_video_path: str,
-    init_video_clip_frame: int,
-    fps: int,
-):
-    video_reader = decord.VideoReader(image_or_video_path)
-    video_num_frames = len(video_reader)
-    video_fps = video_reader.get_avg_fps()
-    sampling_interval = video_fps/fps
-    frame_indices = np.round(np.arange(0, video_num_frames, sampling_interval)).astype(int).tolist()
-    frame_indices = frame_indices[-init_video_clip_frame:]
-    video = video_reader.get_batch(frame_indices).asnumpy()
-    video = [PIL.Image.fromarray(frame) for frame in video]
-    init_num_video_frames = len(video)
-    assert init_num_video_frames == init_video_clip_frame, f"init_video_clip_frame should be {init_num_video_frames}, but got {init_video_clip_frame}"
-    return video
+EXAMPLE_DOC_STRING = """
+    Examples:
+        ```python
+        >>> import torch
+        >>> from diffusers import CogVideoXPipeline
+        >>> from diffusers.utils import export_to_video
+
+        >>> # Models: "THUDM/CogVideoX-2b" or "THUDM/CogVideoX-5b"
+        >>> pipe = CogVideoXPipeline.from_pretrained("THUDM/CogVideoX-2b", torch_dtype=torch.float16).to("cuda")
+        >>> prompt = (
+        ...     "A panda, dressed in a small, red jacket and a tiny hat, sits on a wooden stool in a serene bamboo forest. "
+        ...     "The panda's fluffy paws strum a miniature acoustic guitar, producing soft, melodic tunes. Nearby, a few other "
+        ...     "pandas gather, watching curiously and some clapping in rhythm. Sunlight filters through the tall bamboo, "
+        ...     "casting a gentle glow on the scene. The panda's face is expressive, showing concentration and joy as it plays. "
+        ...     "The background includes a small, flowing stream and vibrant green foliage, enhancing the peaceful and magical "
+        ...     "atmosphere of this unique musical performance."
+        ... )
+        >>> video = pipe(prompt=prompt, guidance_scale=6, num_inference_steps=50).frames[0]
+        >>> export_to_video(video, "output.mp4", fps=8)
+        ```
+"""
 
 def randn_like(tensor, generator=None):
     return randn_tensor(
@@ -171,8 +167,6 @@ def retrieve_timesteps(
     else:
         scheduler.set_timesteps(num_inference_steps, device=device, **kwargs)
         timesteps = scheduler.timesteps
-    
-
     return timesteps, num_inference_steps
 
 
@@ -513,7 +507,7 @@ class CogVideoXPipeline(DiffusionPipeline, CogVideoXLoraLoaderMixin):
     @property
     def interrupt(self):
         return self._interrupt
-    
+
     def get_control_from_signal(self, control_signal):
         if not hasattr(self, "control_embeddings"):
             clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
@@ -845,8 +839,6 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             transformer,
             scheduler,
         )
-        
-        # ===== for interactive streaming =====
         # The return of get_world_group() is a custom GroupCoordinator object
         self.dit_process_group = get_world_group()  # TODO: this should be replaced with `get_dit_group` in the ray environment
         self.rank = self.dit_process_group.rank
@@ -858,23 +850,22 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         self.control_signal_to_idx = {k: i for i, k in enumerate(CONTROL_SIGNAL_TO_PROMPT.keys())}
         self.idx_to_control_signal = {v : k for k, v in self.control_signal_to_idx.items()}
         self.action_cache = []
-        # ========================================
-    
-    def init_ray_sender(self):  # for interactive streaming
-        if self.rank == 0:  # assert the total worker rank order is [dit_workers=M, vae_workers=N, postprocessor_worker=1], so the first worker is the dit_worker
+
+    def init_ray_sender(self):
+        if self.rank == 0:  # asserreturn latents, latents_pop rank order is [dit_workers=M, vae_workers=N, postprocessor_worker=1], so the first worker is the dit_worker
             ray.init(address='auto')  # connect to ray cluster
             self.queue_manager = ray.get_actor("dit2vae_queue", namespace='matrix')
             self.action_manager = ray.get_actor("action_queue", namespace='matrix') 
             self.dit_step_var = ray.get_actor("dit_step_var", namespace='matrix')
             self.vae_step_var = ray.get_actor("vae_step_var", namespace='matrix')
         
-    def send_latents_to_queue(self, latents, batch_timestamps):   # for interactive streaming
+    def send_latents_to_queue(self, latents, batch_timestamps):
         if self.rank == 0:  # TODO: Try not to use ray.get to avoid blocking to save time?
             assert hasattr(self, "queue_manager")
             latents = add_timestamp(latents, label='DiT-out-latent', timestamps=batch_timestamps)
             ray.get(self.queue_manager.put.remote(latents))
-
-    def fetch_all_actions(self, window_size):  # for interactive streaming
+    
+    def fetch_all_actions(self, window_size):
         # get all actions from front-end, and keep the latest ones
         if self.rank == 0:
             assert len(self.action_cache) == 0
@@ -888,8 +879,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
                 self.action_cache.extend(actions)
             self.action_cache = self.action_cache[-window_size:]
         torch.distributed.barrier()
-    
-    def _get_action(self):  # for interactive streaming
+
+    def _get_action(self):
         action = self.action_cache.pop(0)
         action, timestamps = get_data_and_timestamps(action)
         if timestamps is not None:
@@ -897,8 +888,8 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             if passed_times:
                 self.print(f"[CogVideoXInteractiveStreamingPipeline._get_action] passed_times:\n{passed_times}")
         return action, timestamps
-    
-    def get_current_action(self):  # for interactive streaming
+
+    def get_current_action(self):
         # Get the current action input from the action shared variable and broadcast it to all other dit workers
         # return type: str, e.g. "D"
         device = torch.device(f'cuda:{self.dit_process_group.local_rank}')
@@ -928,60 +919,10 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         assert current_action in ["D", "DR", "DL", "N", "B"], f"Invalid action input: {current_action}"
         return current_action, timestamps
 
-    def print(self, *args, **kwargs):  # for interactive streaming
+    def print(self, *args, **kwargs):
         if self.rank == 0:
             print(*args, **kwargs)
-    
-    def get_control_from_signal_interactive(self, gen_config:GenerationConfig):  # for interactive streaming
-        num_latent_frames, window_size = gen_config.num_frames, gen_config.gen_step_config.window_size
-        # TODO: Handle this in multi-gpu setting
-        assert hasattr(self, "control_embeddings")
-        if len(self.model_input_actions) == 0:  # initialize the action window for the first time
-            self.model_input_actions = [self.init_action] * num_latent_frames
-            self.model_input_action_timestamps = None
-            if self.rank == 0:
-                self.model_input_action_timestamps = [[] for _ in range(num_latent_frames)]
-        else:
-            action_window = []
-            timestamps_window = []
-            with timer(label=f"[RANK {self.rank}]: `self.fetch_all_actions`"):
-                self.fetch_all_actions(window_size)
-            for _ in range(window_size):
-                # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
-                action, timestamps = self.get_current_action()
-                action_window.append(action)
-                timestamps_window.append(timestamps)
-            self.model_input_actions.extend(action_window)
-            self.model_input_actions = self.model_input_actions[-num_latent_frames:]
-            if self.model_input_action_timestamps is not None:
-                self.model_input_action_timestamps.extend(timestamps_window)
-                self.model_input_action_timestamps = self.model_input_action_timestamps[-num_latent_frames:]
-        self.print(f"Current actions: {self.model_input_actions}")
-        control_indices = [self.control_signal_to_idx[action] for action in self.model_input_actions] 
-        control_emb = self.control_embeddings[control_indices]
-        control_emb = control_emb.unsqueeze(0).to(gen_config.gen_step_config.prompt_embeds.dtype).contiguous()
-        if gen_config.do_classifier_free_guidance:
-            control_emb = torch.cat([control_emb, control_emb], dim=0)
-        return control_emb
 
-    def pop_timestamps(self, window_size, with_frame_cond=True):  # for interactive streaming
-        if self.model_input_action_timestamps is None:
-            return None
-        if with_frame_cond:
-            return self.model_input_action_timestamps[1 : 1 + window_size]
-        else:
-            return self.model_input_action_timestamps[ : window_size]
-
-    def wait(self, group_idx, sec):  # for interactive streaming
-        # wait for the preparation of VAE
-        torch.cuda.synchronize()
-        # if group_idx == 1:
-        #     vae_warmup_time = 30
-        #     self.print(f"Waiting {vae_warmup_time} seconds for VAE warmup...")
-        #     time.sleep(vae_warmup_time)
-        if sec > 0:
-            time.sleep(sec)
-            
     def prepare_latents(
         self,
         init_video: Optional[torch.Tensor] = None,
@@ -1051,37 +992,63 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         return latents
     
     def set_up_control_embeddings(self):
-        if not hasattr(self, "control_embeddings"):
-            clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-            clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
-            clip_model.requires_grad_(False)
-            device = torch.device(f'cuda:{self.rank}')
-            clip_model.to(device, dtype=self.transformer.dtype)
+        assert not hasattr(self, "control_embeddings")
+        clip_tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+        clip_model = CLIPModel.from_pretrained("openai/clip-vit-large-patch14")
+        clip_model.requires_grad_(False)
+        device = torch.device(f'cuda:{self.rank}')
+        clip_model.to(device, dtype=self.transformer.dtype)
 
-            control_prompts = list(CONTROL_SIGNAL_TO_PROMPT.values())
-            control_prompt_ids = clip_tokenizer(control_prompts, padding=True, return_tensors="pt")
-            control_prompt_ids.to(device)
-            self.control_embeddings = clip_model.get_text_features(**control_prompt_ids)
-            null_control_prompt_ids = clip_tokenizer([""], padding=True, return_tensors="pt")
-            null_control_prompt_ids.to(device)
-            self.null_control_embedding = clip_model.get_text_features(**null_control_prompt_ids)
-            
-            # delete clip model after getting all control embeddings
-            del clip_model
-            gc.collect()
-            torch.cuda.empty_cache()
+        control_prompts = list(CONTROL_SIGNAL_TO_PROMPT.values())
+        control_prompt_ids = clip_tokenizer(control_prompts, padding=True, return_tensors="pt")
+        control_prompt_ids.to(device)
+        self.control_embeddings = clip_model.get_text_features(**control_prompt_ids)
+        null_control_prompt_ids = clip_tokenizer([""], padding=True, return_tensors="pt")
+        null_control_prompt_ids.to(device)
+        self.null_control_embedding = clip_model.get_text_features(**null_control_prompt_ids)
         
-    def get_control_from_signal(self, control_signal, start=None, end=None):
-        assert hasattr(self, "control_embeddings")
-
-        control_signal_list = control_signal.split(",")
-        if start is not None and end is not None:
-            control_signal_list = control_signal_list[start: end]
-        control_indices = [self.control_signal_to_idx[c] for c in control_signal_list]
-        control = self.control_embeddings[control_indices]
-        return control, control_indices
+        # delete clip model after getting all control embeddings
+        del clip_model
+        gc.collect()
+        torch.cuda.empty_cache()
     
-    def decode_latents(self, latents: torch.Tensor, sliced_decode=False, keep_cache=True) -> torch.Tensor:
+    def get_control_from_signal_interactive(self, num_latent_frames, window_size):
+        # TODO: Handle this in multi-gpu setting
+        assert hasattr(self, "control_embeddings")
+        if len(self.model_input_actions) == 0:  # initialize the action window for the first time
+            self.model_input_actions = [self.init_action] * num_latent_frames
+            self.model_input_action_timestamps = None
+            if self.rank == 0:
+                self.model_input_action_timestamps = [[] for _ in range(num_latent_frames)]
+        else:
+            action_window = []
+            timestamps_window = []
+            with timer(label=f"[RANK {self.rank}]: `self.fetch_all_actions`"):
+                self.fetch_all_actions(window_size)
+            for _ in range(window_size):
+                # this will block the process if the initial value is None, continue until frontend updates the value from keyboard
+                action, timestamps = self.get_current_action()
+                action_window.append(action)
+                timestamps_window.append(timestamps)
+            self.model_input_actions.extend(action_window)
+            self.model_input_actions = self.model_input_actions[-num_latent_frames:]
+            if self.model_input_action_timestamps is not None:
+                self.model_input_action_timestamps.extend(timestamps_window)
+                self.model_input_action_timestamps = self.model_input_action_timestamps[-num_latent_frames:]
+        self.print(f"Current actions: {self.model_input_actions}")
+        control_indices = [self.control_signal_to_idx[action] for action in self.model_input_actions] 
+        control = self.control_embeddings[control_indices]
+        return control
+
+    def pop_timestamps(self, window_size, with_frame_cond=True):
+        if self.model_input_action_timestamps is None:
+            return None
+        if with_frame_cond:
+            return self.model_input_action_timestamps[1 : 1 + window_size]
+        else:
+            return self.model_input_action_timestamps[ : window_size]
+
+    def decode_latents(self, latents: torch.Tensor, sliced_decode=False) -> torch.Tensor:
         latents = latents.permute(0, 2, 1, 3, 4)  # [batch_size, num_channels, num_frames, height, width]
         latents = 1 / self.vae_scaling_factor_image * latents
 
@@ -1093,13 +1060,13 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             cur_start = 0
             all_frames = []
             while cur_start + decode_window <= num_latent_frames:
-                cur_frames = self.vae.decode(latents[:, :, cur_start:cur_start+decode_window], keep_cache=keep_cache).sample
+                cur_frames = self.vae.decode(latents[:, :, cur_start:cur_start+decode_window]).sample
                 cur_frames_cpu = cur_frames.cpu()
                 del cur_frames
                 all_frames.append(cur_frames_cpu)
                 cur_start += (decode_window - overlap_length)
             if cur_start + overlap_length < num_latent_frames or cur_start == 0:
-                cur_frames = self.vae.decode(latents[:, :, cur_start:], keep_cache=keep_cache).sample
+                cur_frames = self.vae.decode(latents[:, :, cur_start:]).sample
                 cur_frames_cpu = cur_frames.cpu()
                 del cur_frames
                 all_frames.append(cur_frames_cpu)
@@ -1107,294 +1074,82 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             frames.extend([item[:, :, overlap_length*4:] for item in all_frames[1:]])
             frames = torch.cat(frames, dim=2)
         else:
-            frames = self.vae.decode(latents, keep_cache=keep_cache).sample
+            frames = self.vae.decode(latents).sample
         
         return frames
     
-    @torch.no_grad()
-    def generate_step_interactive(self, latents, control_emb, group_idx, gen_config):
-        gen_step_config = gen_config.gen_step_config
-        (num_noise_groups, lcm_multiplier, num_warmup_steps, with_frame_cond, window_size, inner_steps, timesteps_grouped, 
-         batch_size, do_classifier_free_guidance, prompt_embeds, negative_prompt_embeds, image_rotary_emb, 
-         attention_kwargs, extra_step_kwargs) = (gen_step_config.num_noise_groups, gen_step_config.lcm_multiplier, gen_step_config.num_warmup_steps, gen_step_config.with_frame_cond, gen_step_config.window_size, \
-                        gen_step_config.inner_steps, gen_step_config.timesteps_grouped, gen_step_config.batch_size, gen_step_config.do_classifier_free_guidance, gen_step_config.prompt_embeds, gen_step_config.negative_prompt_embeds, gen_step_config.image_rotary_emb, \
-                        gen_step_config.attention_kwargs, gen_step_config.extra_step_kwargs)
-        generator = extra_step_kwargs['generator']
-        dit_start_time = time.time()
-        nvtx.range_push(f"Decoding of {group_idx}th latent")
-        with self.progress_bar(total=inner_steps) as progress_bar:  # inner_steps = num_inference_steps // num_noise_groups
-            # for DPM-solver++
-            old_pred_original_sample = None
-            for i in range(inner_steps):
-                if self.interrupt:
-                    continue
-                # [B, F', 1, 1, 1]
-                timesteps = timesteps_grouped[i : i + 1].repeat(batch_size, 1)[..., None, None, None]
-
-                if i > 0:
-                    # [B, F', 1, 1, 1]
-                    timesteps_back = timesteps_grouped[i - 1 : i].repeat(batch_size, 1)[..., None, None, None]
-                else:
-                    timesteps_back = None
-
-                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                # latent_model_input = self.scheduler.scale_model_input(
-                #     latent_model_input, t
-                # )
-
-                # predict noise model_output
-                with timer(label=f"[RANK {self.rank}]: Only DiT with {latent_model_input.shape=}"): 
-                    noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep=timesteps,
-                        image_rotary_emb=image_rotary_emb,
-                        attention_kwargs=attention_kwargs,
-                        return_dict=False,
-                        control_emb=control_emb,
-                    )[0]
-                    noise_pred = noise_pred.float()
-
-                # perform guidance
-                # issue with strange logic: https://github.com/huggingface/diffusers/issues/9641
-                # if use_dynamic_cfg:
-                #     self._guidance_scale = 1 + guidance_scale * (
-                #         (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
-                #     )
-                if do_classifier_free_guidance:
-                    guidance_scale = guidance_scale * torch.ones(batch_size)
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                # compute the previous noisy sample x_t -> x_t-1
-                latents_cond = latents[:, :1]
-                latents, old_pred_original_sample = self.scheduler.step(
-                    noise_pred[:,1:],
-                    timesteps[:,1:],
-                    latents[:,1:],
-                    **extra_step_kwargs,
-                    return_dict=False,
-                    num_lcm_phases=num_noise_groups * lcm_multiplier
-                )
-                latents = latents.to(prompt_embeds.dtype)
-                latents = torch.cat([latents_cond, latents], dim=1)  # keep cond frame unchanged
-
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
+    def wait(self, group_idx, sec):
+        # wait for the preparation of VAE
         torch.cuda.synchronize()
-        nvtx.range_pop()
-        dit_end_time = time.time()
-        self.print(f"Group_{group_idx} DiT time: {dit_end_time - dit_start_time}")
-        if(self.rank == 0):
-            self.dit_step_var.set.remote(new_value=group_idx)
-        if with_frame_cond:
-            latents_pop = latents[:, 1 : window_size + 1]
-            latents_remain = latents[:, window_size + 1 :]
-            latents_cond_new = latents_pop[:, -1].unsqueeze(1)
-            latents_new = torch.cat(
-                [latents_cond_new, latents_remain, randn_like(latents_pop, generator)],
-                dim=1,
-            )  # append noisy video token to the right of the video sequence
-            latents = latents_new
-        else:
-            latents_pop = latents[:, :window_size]
-            latents_remain = latents[:, window_size:]
-            latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
-            latents = latents_new
-        return latents, latents_pop
-            
+        # if group_idx == 1:
+        #     vae_warmup_time = 30
+        #     self.print(f"Waiting {vae_warmup_time} seconds for VAE warmup...")
+        #     time.sleep(vae_warmup_time)
+        if sec > 0:
+            time.sleep(sec)
+
     @torch.no_grad()
-    def generate_step(self, latents, control_emb, *, num_noise_groups, lcm_multiplier, num_warmup_steps, with_frame_cond, window_size,
-                      inner_steps, timesteps_grouped, batch_size, do_classifier_free_guidance, prompt_embeds, negative_prompt_embeds, image_rotary_emb, 
-                      attention_kwargs, extra_step_kwargs):
-        with self.progress_bar(total=inner_steps) as progress_bar:
-            # for DPM-solver++
-            old_pred_original_sample = None
-            for i in range(inner_steps):
-                if self.interrupt:
-                    continue
-                # [B, F', 1, 1, 1]
-                timesteps = timesteps_grouped[i : i + 1].repeat(batch_size, 1)[..., None, None, None]
-
-                if i > 0:
-                    # [B, F', 1, 1, 1]
-                    timesteps_back = timesteps_grouped[i - 1 : i].repeat(batch_size, 1)[..., None, None, None]
-                else:
-                    timesteps_back = None
-
-                latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
-                # latent_model_input = self.scheduler.scale_model_input(
-                #     latent_model_input, t
-                # )
-
-                # predict noise model_output
-                if torch.backends.mps.is_available():
-                    autocast_ctx = nullcontext()
-                else:
-                    autocast_ctx = torch.autocast("cuda", dtype=latents.dtype)
-
-                with autocast_ctx:
-                    noise_pred = self.transformer(
-                        hidden_states=latent_model_input,
-                        encoder_hidden_states=prompt_embeds,
-                        timestep=timesteps,
-                        image_rotary_emb=image_rotary_emb,
-                        attention_kwargs=attention_kwargs,
-                        return_dict=False,
-                        control_emb=control_emb,
-                    )[0]
-                noise_pred = noise_pred.float()
-
-
-                if do_classifier_free_guidance:
-                    guidance_scale = guidance_scale * torch.ones(batch_size)
-                    noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
-                    noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
-
-                # compute the previous noisy sample x_t -> x_t-1
-                if isinstance(self.scheduler, CogVideoXSwinDPMScheduler):
-                    latents_cond = latents[:, :1]
-                    latents, old_pred_original_sample = self.scheduler.step(
-                        noise_pred[:,1:],
-                        old_pred_original_sample,
-                        timesteps[:,1:],
-                        timesteps_back[:,1:] if timesteps_back is not None else None,
-                        latents[:,1:],
-                        **extra_step_kwargs,
-                        return_dict=False,
-                    )
-                    latents = latents.to(prompt_embeds.dtype)
-                    latents = torch.cat([latents_cond, latents], dim=1) 
-                        # keep cond frame unchanged
-                elif isinstance(self.scheduler, LCMSwinScheduler):
-                    latents_cond = latents[:, :1]
-                    latents, old_pred_original_sample = self.scheduler.step(
-                        noise_pred[:,1:],
-                        timesteps[:,1:],
-                        latents[:,1:],
-                        **extra_step_kwargs,
-                        return_dict=False,
-                        num_lcm_phases=num_noise_groups * lcm_multiplier
-                    )
-                                    
-                    latents = latents.to(prompt_embeds.dtype)
-                    latents = torch.cat([latents_cond, latents], dim=1)
-                else :
-                    latents_cond = latents[:, :1]
-                    latents, old_pred_original_sample = self.scheduler.step(
-                        noise_pred[:,1:],
-                        timesteps[:,1:],
-                        latents[:,1:],
-                        **extra_step_kwargs,
-                        return_dict=False,
-                    )
-                    latents = latents.to(prompt_embeds.dtype)
-                    latents = torch.cat([latents_cond, latents], dim=1)  # keep cond frame unchanged 
-
-                if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
-                    progress_bar.update()
-
-        if with_frame_cond:
-            latents_pop = latents[:, 1 : window_size + 1]
-            latents_remain = latents[:, window_size + 1 :]
-            latents_cond_new = latents_pop[:, -1].unsqueeze(1)
-            latents_new = torch.cat([latents_cond_new, latents_remain, torch.randn_like(latents_pop)], dim=1)  # append noisy video token to the right of the video sequence
-            latents = latents_new
-        else:
-            latents_pop = latents[:, :window_size]
-            latents_remain = latents[:, window_size:]
-            latents_new = torch.cat([latents_remain, torch.randn_like(latents_pop)], dim=1)
-            latents = latents_new
-        return latents, latents_pop
-    
-    def prepare_prompt_embeds(self, gen_config: GenerationConfig):
-        device = self._execution_device
-        prompt, negative_prompt, guidance_scale, do_classifier_free_guidance, num_videos_per_prompt, max_sequence_length, prompt_embeds, negative_prompt_embeds = (
-            gen_config.prompt, gen_config.negative_prompt, gen_config.guidance_scale, gen_config.do_classifier_free_guidance, gen_config.num_videos_per_prompt, gen_config.max_sequence_length, gen_config.prompt_embeds, gen_config.negative_prompt_embeds
-        )
-        print("Prompt: ", prompt, negative_prompt, guidance_scale, do_classifier_free_guidance, num_videos_per_prompt, max_sequence_length, prompt_embeds, negative_prompt_embeds)
-        do_classifier_free_guidance = do_classifier_free_guidance and (guidance_scale > 1.0)
-
-        # 3. Encode input prompt
-        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
-            prompt,
-            negative_prompt,
-            do_classifier_free_guidance,
-            num_videos_per_prompt=num_videos_per_prompt,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            max_sequence_length=max_sequence_length,
-            device=device,
-        )
-
-        if do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-        
-        # update the prompt_embeds and negative_prompt_embeds in gen_config
-        gen_config.gen_step_config.prompt_embeds = prompt_embeds
-        gen_config.gen_step_config.negative_prompt_embeds = negative_prompt_embeds
-        
-        # return prompt_embeds, negative_prompt_embeds
-        return gen_config
-    
-    def prepare_latents_from_video(self, gen_config: GenerationConfig, device=None, dtype=None):
-        (latents, init_video, height, width, batch_size, num_videos_per_prompt, num_frames, timesteps_grouped, generator) = (
-            gen_config.latents, gen_config.init_video, gen_config.height, gen_config.width, gen_config.batch_size, gen_config.num_videos_per_prompt, gen_config.num_frames, gen_config.timesteps_grouped, gen_config.generator)
-        device = device or self._execution_device
-        dtype = dtype or self.text_encoder.dtype
-        if latents is None:
-            init_video = self.video_processor.preprocess_video(init_video, height=height, width=width)
-            init_video = init_video.to(device=device, dtype=dtype)
-            latents = None
-        else:
-            init_video = None
-            latents = latents.to(device, dtype=dtype)
-
-        latent_channels = self.transformer.config.in_channels
-        latents = self.prepare_latents(  # add noise to the latents (from video clip) 
-            init_video,
-            batch_size * num_videos_per_prompt,
-            latent_channels,
-            num_frames,
-            height,
-            width,
-            dtype,
-            device,
-            generator,
-            latents,
-            timesteps_grouped[0],
-        )
-        print("Latent size:", latents.size())
-        return latents
-    
-    def prepare_generation_context(
+    def __call__(
         self,
-        gen_config: GenerationConfig
-        )->Tuple[GenerationStepConfig, DecodeConfig]:
-        
-        init_video, prompt, negative_prompt, height, width, num_frames, num_inference_steps, timesteps, guidance_scale, use_dynamic_cfg, num_videos_per_prompt, eta, generator, latents, prompt_embeds, negative_prompt_embeds, output_type, return_dict, attention_kwargs, callback_on_step_end_tensor_inputs, max_sequence_length, control_signal, num_noise_groups, num_sample_groups, with_frame_cond, do_classifier_free_guidance, lcm_multiplier, kwargs = (
-            gen_config.init_video, gen_config.prompt, gen_config.negative_prompt, gen_config.height, gen_config.width, gen_config.num_frames, gen_config.num_inference_steps, gen_config.timesteps, gen_config.guidance_scale, gen_config.use_dynamic_cfg, gen_config.num_videos_per_prompt, gen_config.eta, gen_config.generator, gen_config.latents, gen_config.prompt_embeds, gen_config.negative_prompt_embeds, gen_config.output_type, gen_config.return_dict, gen_config.attention_kwargs, gen_config.callback_on_step_end_tensor_inputs, gen_config.max_sequence_length, gen_config.control_signal, gen_config.num_noise_groups, gen_config.num_sample_groups, gen_config.with_frame_cond, gen_config.do_classifier_free_guidance, gen_config.lcm_multiplier, gen_config.kwargs
-        )
+        init_video=None,  # add init video for video prediction, frame number = 49
+        prompt=None,
+        negative_prompt=None,
+        height=480,
+        width=720,
+        num_frames=49,
+        num_inference_steps=20,
+        timesteps=None,
+        guidance_scale=6,
+        use_dynamic_cfg=False,
+        num_videos_per_prompt=1,
+        eta=0,
+        generator=None,
+        latents=None,
+        prompt_embeds=None,
+        negative_prompt_embeds=None,
+        output_type="pil",
+        return_dict=True,
+        attention_kwargs=None,
+        callback_on_step_end_tensor_inputs=["latents"],
+        max_sequence_length=226,
+        control_signal: List[str] = None,
+        num_noise_groups=4,  # number of noise group number
+        num_sample_groups=8,  # number of outer sampling loop, and each iteration output a group of video tokens.
+        with_frame_cond=True,  # whether to use frame condition, if ture the first frame is used as condition with zero noise.
+        wait_vae_seconds=0.,
+        **kwargs
+    ):
         assert isinstance(self.scheduler, LCMSwinScheduler)
         assert with_frame_cond, "Currently `with_frame_cond` must be True."
-        num_videos_per_prompt = 1
-        outer_steps = num_sample_groups
+
+        # Total sampling steps = num_inference_steps * num_sample_groups // num_noise_group
+        # Outer sampling steps = num_sample_groups
+        # Inner sampling steps = num_inference_steps // num_noise_group
+
+        # if num_frames > 49:
+        #     raise ValueError(
+        #         "The number of frames must be less than 49 for now due to static positional embeddings. This will be updated in the future to remove this limitation."
+        #     )
+        lcm_multiplier = kwargs.pop('lcm_multiplier', 1)
+
         if with_frame_cond:
-            num_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1 if latents is None else latents.size(1)    
-            
+            num_frames = (num_frames - 1) // self.vae_scale_factor_temporal + 1 if latents is None else latents.size(1)
+            num_videos_per_prompt = 1
+            outer_steps = num_sample_groups
             inner_steps = num_inference_steps // num_noise_groups
             window_size = (num_frames - 1) // num_noise_groups
         else:
             num_frames = num_frames // self.vae_scale_factor_temporal if latents is None else latents.size(1)
+            num_videos_per_prompt = 1
+            outer_steps = num_sample_groups
             inner_steps = num_inference_steps // num_noise_groups
             window_size = num_frames // num_noise_groups
-        gen_config.num_frames = num_frames
         
         if with_frame_cond:    
             num_frames_nocond = num_frames - 1
         else:
             num_frames_nocond = num_frames
-        
+
         assert (
             num_frames_nocond % num_noise_groups == 0
         ), f"num_frames (without conditional frame) should be divisible by num_noise_groups, but get: num_frames_nocond {num_frames_nocond} and num_noise_groups {num_noise_groups}"
@@ -1402,11 +1157,11 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             num_inference_steps % num_noise_groups == 0
         ), "total inference step number should be divisible by num_noise_groups"
             
-        # print(f"Total video tokens in the queue (F): {num_frames}")
-        # print(f"Noise group number (G): {num_noise_groups}")
-        # print(f"Window size (W): {window_size}")
-        # print(f"Num_sample_groups (S): {num_sample_groups}")
-        # print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
+        self.print(f"Total video tokens in the queue (F): {num_frames}")
+        self.print(f"Noise group number (G): {num_noise_groups}")
+        self.print(f"Window size (W): {window_size}")
+        self.print(f"Num_sample_groups (S): {num_sample_groups}")
+        self.print(f"Output frame number (S*W*4 + 1): {num_frames * num_noise_groups * 4 + 1}") 
 
         # 1. Check inputs. Raise error if not correct
         self.check_inputs(
@@ -1429,16 +1184,27 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             batch_size = len(prompt)
         else:
             batch_size = prompt_embeds.shape[0]
-        gen_config.batch_size = batch_size
+
         device = self._execution_device
 
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
         # corresponds to doing no classifier free guidance.
-        # ========= update prompt embed =========
-        # gen_config.prompt == "xxxx"
-        # prompt_embeds, negative_prompt_embeds = self.prepare_prompt_embeds(gen_config)
-        # ========================================
+        do_classifier_free_guidance = guidance_scale > 1.0
+
+        # 3. Encode input prompt
+        prompt_embeds, negative_prompt_embeds = self.encode_prompt(
+            prompt,
+            negative_prompt,
+            do_classifier_free_guidance,
+            num_videos_per_prompt=num_videos_per_prompt,
+            prompt_embeds=prompt_embeds,
+            negative_prompt_embeds=negative_prompt_embeds,
+            max_sequence_length=max_sequence_length,
+            device=device,
+        )
+        if do_classifier_free_guidance:
+            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
 
         # 4. Prepare timesteps
         timesteps, num_inference_steps = retrieve_timesteps(self.scheduler, num_inference_steps, device, timesteps, **kwargs)
@@ -1452,8 +1218,30 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
             pad_cond_timesteps=with_frame_cond,
             pad_prev_timesteps=False,
         )  # [T//G , F'], where F'=W*G
-        gen_config.timesteps_grouped = timesteps_grouped
-        
+
+        # 5. Prepare latents.
+        if latents is None:
+            init_video = self.video_processor.preprocess_video(init_video, height=height, width=width)
+            init_video = init_video.to(device=device, dtype=prompt_embeds.dtype)
+            latents = None
+        else:
+            init_video = None
+            latents = latents.to(device, dtype=prompt_embeds.dtype)
+
+        latent_channels = self.transformer.config.in_channels
+        latents = self.prepare_latents(
+            init_video,
+            batch_size * num_videos_per_prompt,
+            latent_channels,
+            num_frames,
+            height,
+            width,
+            prompt_embeds.dtype,
+            device,
+            generator,
+            latents,
+            timesteps_grouped[0],
+        )
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
@@ -1467,333 +1255,123 @@ class CogVideoXInteractiveStreamingPipeline(CogVideoXPipeline):
         # 8. Denoising loop
         num_warmup_steps = 0
 
-        # gen_config.latents = latents 
-        do_classifier_free_guidance = do_classifier_free_guidance and (guidance_scale > 1.0)
-        gen_step_config = GenerationStepConfig(
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            timesteps_grouped=timesteps_grouped,
-            image_rotary_emb=image_rotary_emb,
-            window_size=window_size,
-            inner_steps=inner_steps,
-            batch_size=batch_size,
-            num_noise_groups=num_noise_groups,
-            num_warmup_steps=num_warmup_steps,
-            with_frame_cond=with_frame_cond,
-            lcm_multiplier=lcm_multiplier,
-            do_classifier_free_guidance=do_classifier_free_guidance,
-            attention_kwargs=attention_kwargs,
-            extra_step_kwargs=extra_step_kwargs,
-        )
-        decode_config = DecodeConfig(
-            output_type=output_type,
-            return_dict=return_dict,
-        )
-        gen_config.gen_step_config = gen_step_config
-        gen_config.decode_config = decode_config
-        
-        # gen_config.latents = latents = self.prepare_latents_from_video(gen_config)
-        # prompt_embeds, negative_prompt_embeds = self.prepare_prompt_embeds(gen_config)
-        # gen_config.gen_step_config.prompt_embeds = prompt_embeds
-        # gen_config.gen_step_config.negative_prompt_embeds = negative_prompt_embeds
-        return gen_config
-    
-    def init_action_window(self, action, n_latents_in_window):
-        # This should align with the inital actions to generate the base_video
-        self.action_window = [action] * n_latents_in_window
-        return self.action_window
-    
-    def expand_action_window(self, window_size=1, expand_factor=1, pad_action="D"):
-        assert len(self.action_window) != 0, "action_window should be initialized before expanding"
-        assert pad_action in self.control_signal_to_idx.keys(), f"pad_action should be one of {self.control_signal_to_idx.keys()}"
-        expanded_action_window = self.action_window + [pad_action] * window_size * expand_factor
+        # Control signal
+        self.print("Starting streaming video prediction...")
+        for group_idx in range(outer_steps):
+            self.print(f"Computing the {group_idx}th/{num_sample_groups} group of video tokens...")
+            group_start_time = time.time()
 
-        assert len(expanded_action_window) == self.gen_config.num_frames + self.gen_step_config.window_size * self.gen_step_config.num_noise_groups, "action_window should be expanded before moving"
-        return expanded_action_window
-    
-    def move_action_window(self, new_action, window_size=1):
-        assert len(self.action_window) != 0, "action_window should be initialized before moving"
-        self.action_window = self.action_window[window_size:] + [new_action] * window_size
-        return self.action_window
-    
-    def update_prompt_embeds(self, new_prompt_embeds):  # deprecated
-        self.prompt_embeds = new_prompt_embeds
-        return self.prompt_embeds
-    
-    def send_latents(self, latents_pop, group_idx, gen_config):
-        if self.rank == 0:
-            with timer(label=f"[RANK {self.rank}]: Moving latents to CPU"):
-                latents_pop_cpu = latents_pop.to('cpu')
-            with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
-                batch_timestamps = self.pop_timestamps(gen_config.gen_step_config.window_size, gen_config.with_frame_cond)
-                self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
-            with timer(label=f"[RANK {self.rank}]: Waiting"):
-                while(True):
-                    vae_step = ray.get(self.vae_step_var.get.remote())
-                    if(vae_step < group_idx - 1):
-                        print(f"DIT PAUSED: DITSTEP {group_idx}, VAESTEP {vae_step}")
-                        self.wait(group_idx, sec=0.003)
+            # Control signal
+            self.print(f"[Group {group_idx}/{num_sample_groups}] Receiving control signal...")
+            with timer(label=f"[RANK {self.rank}]: Receiving control signal"):
+                control_emb = self.get_control_from_signal_interactive(num_frames, window_size)
+                control_emb = control_emb.unsqueeze(0).to(prompt_embeds.dtype).contiguous()
+            if do_classifier_free_guidance:
+                with timer(label=f"[RANK {self.rank}]: Preparation for CFG"):
+                    control_emb = torch.cat([control_emb] * 2)
+            # ===== generate_step =====
+            dit_start_time = time.time()
+            nvtx.range_push(f"Decoding of {group_idx}th latent")
+            with self.progress_bar(total=inner_steps) as progress_bar:  # inner_steps = num_inference_steps // num_noise_groups
+                # for DPM-solver++
+                old_pred_original_sample = None
+                for i in range(inner_steps):
+                    if self.interrupt:
+                        continue
+                    # [B, F', 1, 1, 1]
+                    timesteps = timesteps_grouped[i : i + 1].repeat(batch_size, 1)[..., None, None, None]
+
+                    if i > 0:
+                        # [B, F', 1, 1, 1]
+                        timesteps_back = timesteps_grouped[i - 1 : i].repeat(batch_size, 1)[..., None, None, None]
                     else:
-                        break
-            # self.wait(group_idx, sec=gen_config.wait_vae_seconds)  # wait for the preparation of VAE
-    
-    def prepare_init_latents_from_base_video(self, gen_config: GenerationConfig):
-        init_video_path, exist = fetch_base_video_path_by_prompt(gen_config.prompt, gen_config.video_cache_dir)
-        if exist is False:
-            init_video_path = gen_config.default_video_path
-            print(f"Fallback to default base video due to no cached base video found for prompt: {gen_config.prompt}")
-        gen_config.init_video = load_init_video_clip(init_video_path, gen_config.num_frames, gen_config.fps)
-        gen_config.latents = self.prepare_latents_from_video(gen_config)
-        return gen_config
-    
-    @torch.no_grad()
-    def start_interactive_loop(self, gen_config: GenerationConfig):
-        # --> if start from scratch, we need to re-encode the prompt, initialize the latents from init base video clip
-        # gen_config.prompt = "xxx"
-        gen_config = self.prepare_init_latents_from_base_video(gen_config)
-        gen_config = self.prepare_prompt_embeds(gen_config)  # update the prompt_embeds and negative_prompt_embeds in gen_config
-        
-        # the init_latents are already prepared in the `gen_config.latents`
-        latents = gen_config.latents.clone() if gen_config.latents is not None else None
-        print("Starting streaming video prediction...")
-        for group_idx in range(gen_config.num_sample_groups):
-            # --> if prompt is changed, we need to re-encode the prompt
-            if group_idx == 100:
-                gen_config.prompt = "a driving car is surrounded by many tall trees, and the sun is setting"
-                gen_config = self.prepare_prompt_embeds(gen_config)
-            if group_idx == 200:
-                gen_config.prompt = "a car is driving in a daytime desert with very bright sunshine"
-                gen_config = self.prepare_prompt_embeds(gen_config)
-            self.print(f"Computing the {group_idx}th/{gen_config.num_sample_groups} group of video tokens...")
-            
-            group_start_time = time.time()
-            # ============= Get Control Signal =====================
-            self.print(f"[Group {group_idx}/{gen_config.num_sample_groups}] Receiving control signal...")
-            with timer(label=f"[RANK {self.rank}]: Receiving control signal"):
-                control_emb = self.get_control_from_signal_interactive(gen_config)
-            
-            # ================= DiT Latent Generation =================
-            latents, latents_pop = self.generate_step_interactive(latents, control_emb, group_idx, gen_config)
-                        
-            # ================= Send latents_pop =================
-            self.send_latents(latents_pop, group_idx, gen_config)
+                        timesteps_back = None
 
+                    latent_model_input = torch.cat([latents] * 2) if do_classifier_free_guidance else latents
+                    # latent_model_input = self.scheduler.scale_model_input(
+                    #     latent_model_input, t
+                    # )
+
+                    # predict noise model_output
+                    with timer(label=f"[RANK {self.rank}]: Only DiT with {latent_model_input.shape=}"): 
+                        noise_pred = self.transformer(
+                            hidden_states=latent_model_input,
+                            encoder_hidden_states=prompt_embeds,
+                            timestep=timesteps,
+                            image_rotary_emb=image_rotary_emb,
+                            attention_kwargs=attention_kwargs,
+                            return_dict=False,
+                            control_emb=control_emb,
+                        )[0]
+                        noise_pred = noise_pred.float()
+
+                    # perform guidance
+                    # issue with strange logic: https://github.com/huggingface/diffusers/issues/9641
+                    # if use_dynamic_cfg:
+                    #     self._guidance_scale = 1 + guidance_scale * (
+                    #         (1 - math.cos(math.pi * ((num_inference_steps - t.item()) / num_inference_steps) ** 5.0)) / 2
+                    #     )
+                    if do_classifier_free_guidance:
+                        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+                        noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+                    # compute the previous noisy sample x_t -> x_t-1
+                    #NOTE `with_frame_cond` should be True and `self.scheduler` should be instance of `LCMSwinScheduler`
+                    latents_cond = latents[:, :1]
+                    latents, old_pred_original_sample = self.scheduler.step(
+                        noise_pred[:,1:],
+                        timesteps[:,1:],
+                        latents[:,1:],
+                        **extra_step_kwargs,
+                        return_dict=False,
+                        num_lcm_phases=num_noise_groups * lcm_multiplier
+                    )
+                    latents = latents.to(prompt_embeds.dtype)
+                    latents = torch.cat([latents_cond, latents], dim=1)  # keep cond frame unchanged
+
+                    if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
+                        progress_bar.update()
+            torch.cuda.synchronize()
+            nvtx.range_pop()
+            dit_end_time = time.time()
+            self.print(f"Group_{group_idx} DiT time: {dit_end_time - dit_start_time}")
+            if(self.rank == 0):
+                self.dit_step_var.set.remote(new_value=group_idx)
+            with timer(label=f"[RANK {self.rank}]: Post-processing after DiT"):
+                if with_frame_cond:
+                    latents_pop = latents[:, 1 : window_size + 1]
+                    latents_remain = latents[:, window_size + 1 :]
+                    latents_cond_new = latents_pop[:, -1].unsqueeze(1)
+                    latents_new = torch.cat(
+                        [latents_cond_new, latents_remain, randn_like(latents_pop, generator)],
+                        dim=1,
+                    )  # append noisy video token to the right of the video sequence
+                    latents = latents_new
+                else:
+                    latents_pop = latents[:, :window_size]
+                    latents_remain = latents[:, window_size:]
+                    latents_new = torch.cat([latents_remain, randn_like(latents_pop, generator)], dim=1)
+                    latents = latents_new
+            if self.rank == 0:
+                with timer(label=f"[RANK {self.rank}]: Moving latents to CPU"):
+                    latents_pop_cpu = latents_pop.to('cpu')
+                with timer(label=f"[RANK {self.rank}]: Sending latents to queue"):
+                    batch_timestamps = self.pop_timestamps(window_size, with_frame_cond)
+                    self.send_latents_to_queue(latents_pop_cpu, batch_timestamps=batch_timestamps)
+                with timer(label=f"[RANK {self.rank}]: Waiting"):
+                    while(True):
+                        vae_step = ray.get(self.vae_step_var.get.remote())
+                        if(vae_step < group_idx - 1):
+                            print(f"DIT PAUSED: DITSTEP {group_idx}, VAESTEP {vae_step}")
+                            self.wait(group_idx, sec=0.003)
+                        else:
+                            break
+                    
+                # self.wait(group_idx, sec=wait_vae_seconds)  # wait for the preparation of VAE
             torch.distributed.barrier()
             torch.cuda.synchronize()
             group_end_time = time.time()
             self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")
-            
-        # Offload all models
-        self.maybe_free_model_hooks()
-        
-    @torch.no_grad()
-    def __call__(self, **kwargs):
-        gen_config_fields = {f.name for f in fields(GenerationConfig)}
-        valid_kwargs = {k: v for k, v in kwargs.items() if k in gen_config_fields}
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in gen_config_fields}
-        gen_config = GenerationConfig(**valid_kwargs)
-        gen_config.kwargs = extra_kwargs  # Store extras for later use
-        gen_config.generator = torch.Generator(device=self._execution_device).manual_seed(gen_config.generator_seed)
-        # --> if change prompt from scratch, we need to re-encode the prompt, reinitialize the latents
-        gen_config = self.prepare_generation_context(gen_config)
-        
-        # gen_config.prompt == "xxxx"
-        # --> generate_base_video(gen_config.prompt)
-        # gen_config.init_video == "xxxx"
-        gen_config.latents = latents = self.prepare_latents_from_video(gen_config)
-        
-        # gen_config.prompt = "a car driving on a road with river on the left and mountains on the right"
-        # gen_config.prompt = "a car driving on a road with many many many trees"
-        # gen_config.prompt = "a car driving on a road when the sun is setting"
-        
-        prompt_embeds, negative_prompt_embeds = self.prepare_prompt_embeds(gen_config)
-        gen_config.gen_step_config.prompt_embeds = prompt_embeds
-        gen_config.gen_step_config.negative_prompt_embeds = negative_prompt_embeds
-        
-        # the init_latents are already prepared in the `gen_config.latents`
-        latents = gen_config.latents.clone() if gen_config.latents is not None else None
-        print("Starting streaming video prediction...")
-        for group_idx in range(gen_config.num_sample_groups):
-            self.print(f"Computing the {group_idx}th/{gen_config.num_sample_groups} group of video tokens...")
-            group_start_time = time.time()
-            # ============= Get Control Signal =====================
-            self.print(f"[Group {group_idx}/{gen_config.num_sample_groups}] Receiving control signal...")
-            with timer(label=f"[RANK {self.rank}]: Receiving control signal"):
-                control_emb = self.get_control_from_signal_interactive(gen_config)
-            
-            # ================= DiT Latent Generation =================
-            # --> prepare new prompt embeds, and update to gen_step_config.prompt_embeds and gen_step.negative_prompt_embeds
-            latents, latents_pop = self.generate_step_interactive(latents, control_emb, group_idx, gen_config)
-                        
-            # ================= Send latents_pop =================
-            self.send_latents(latents_pop, group_idx, gen_config)
-
-            torch.distributed.barrier()
-            torch.cuda.synchronize()
-            group_end_time = time.time()
-            self.print(f"Group_{group_idx} time: {group_end_time - group_start_time}")
-            
-        # Offload all models
-        self.maybe_free_model_hooks()
-    
-    @torch.no_grad()
-    def inference__call(self, **kwargs):
-        dataclass_fields = {f.name for f in fields(GenerationConfig)}
-        valid_kwargs = {k: v for k, v in kwargs.items() if k in dataclass_fields}
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in dataclass_fields}
-
-        gen_config = GenerationConfig(**valid_kwargs)
-        gen_config.kwargs = extra_kwargs  # Store extras for later
-        
-        gen_config, gen_step_config, decode_config = self.prepare_generation_context(gen_config)  # gen_config.num_frames = 5
-        control_start = 0 if gen_config.with_frame_cond else 1
-        latents = gen_config.latents.clone() if gen_config.latents is not None else None
-        print("Starting streaming video prediction...")
-        latents_pop_stream = []
-        for group_idx in range(gen_config.num_sample_groups):
-            print(f"Finished group number is {len(latents_pop_stream)}...Computing for the {group_idx + 1}th/{gen_config.num_sample_groups} group of video tokens...")
-            # ============= Predefined Control Signal ==============
-            control_emb, control_indices = self.get_control_from_signal(gen_config.control_signal, control_start, control_start + gen_config.num_frames)
-            control_emb = control_emb.unsqueeze(0).to(gen_step_config.prompt_embeds.dtype).contiguous()
-            control_start += gen_step_config.window_size
-            print("current control_indices: ", control_indices)
-            # ======================================================
-            
-            if gen_config.do_classifier_free_guidance:
-                control_emb = torch.cat([control_emb, control_emb], dim=0)
-            
-            latents, latents_pop = self.generate_step(latents, control_emb, **vars(gen_step_config))
-            
-            latents_pop_stream.append(latents_pop)  # latents_pop.shape: torch.Size([1, 1, 16, 60, 90]) 
-        latents_out = torch.cat(latents_pop_stream, dim=1)
-
-        if not decode_config.output_type == "latent":
-            video = self.decode_latents(latents_out, sliced_decode=True, keep_cache=False)
-            video = self.video_processor.postprocess_video(video=video, output_type=decode_config.output_type)
-        else:
-            video = latents_out
 
         # Offload all models
         self.maybe_free_model_hooks()
-
-        if not decode_config.return_dict:
-            return (video,)
-
-        return CogVideoXPipelineOutput(frames=video)
-    
-    @torch.no_grad()
-    def gym_init(self, **kwargs):
-        # input text prompt, latents, generation config, save configs to member attributes
-        dataclass_fields = {f.name for f in fields(GenerationConfig)}
-        valid_kwargs = {k: v for k, v in kwargs.items() if k in dataclass_fields}
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in dataclass_fields}
-        gen_config = GenerationConfig(**valid_kwargs)
-        gen_config.kwargs = extra_kwargs  # Store extras for later
-        
-        self.gen_config, self.gen_step_config, self.decode_config = self.prepare_generation_context(gen_config)
-        self.vae.decoder_cache = None
-        self.latents = self.gen_config.latents.clone() if self.gen_config.latents is not None else None
-        
-        assert self.gen_config.control_signal is None, "control signal should be None when using as gym"
-    
-    @torch.no_grad()
-    def interactive_init(self, **kwargs):
-        # input text prompt, latents, generation config, save configs to member attributes
-        dataclass_fields = {f.name for f in fields(GenerationConfig)}
-        valid_kwargs = {k: v for k, v in kwargs.items() if k in dataclass_fields}
-        extra_kwargs = {k: v for k, v in kwargs.items() if k not in dataclass_fields}
-        wait_vae_seconds = extra_kwargs.pop("wait_vae_seconds", 0.)
-        gen_config = GenerationConfig(**valid_kwargs)
-        gen_config.kwargs = extra_kwargs  # Store extras for later
-        
-        self.gen_config, self.gen_step_config, self.decode_config = self.prepare_generation_context(gen_config)  # gen_config.num_frames = 5
-        assert self.gen_config.control_signal is None, "control signal should be None when using as interactive"
-        
-    @torch.no_grad()
-    def gym_reset(self):
-        # 1. Reset the environment
-        self.vae.decoder_cache = None
-        self.init_action_window("D", self.gen_config.num_frames)  # ensure this align with the first part actions to generate base video
-        self.latents = self.gen_config.latents.clone() if self.gen_config.latents is not None else None
-        
-        # 2. Generate 
-        expanded_action_window = self.expand_action_window(window_size=self.gen_step_config.window_size, expand_factor=self.gen_step_config.num_noise_groups)
-        expanded_action_window_str = ",".join(expanded_action_window)
-        latents = self.latents.clone()
-        all_latents = []
-        all_latents_pop = []
-        for i in range(self.gen_step_config.num_noise_groups):
-            control_emb, control_indices = self.get_control_from_signal(expanded_action_window_str, i, i+self.gen_config.num_frames)
-            control_emb = control_emb.unsqueeze(0).to(self.gen_step_config.prompt_embeds.dtype).contiguous()
-            print("current control_indices: ", control_indices)
-            
-            if self.gen_config.do_classifier_free_guidance:
-                control_emb = torch.cat([control_emb, control_emb], dim=0)
-            
-            latents, latents_pop = self.generate_step(latents, control_emb, **vars(self.gen_step_config))
-            
-            all_latents.append(latents)
-            all_latents_pop.append(latents_pop)
-            
-        # 3. Update inner state
-        vae_warmup_2_latents = torch.cat(all_latents_pop[-2:], dim=1)  # keep the last two latent for the first time (warmup the vae decoder_cache)
-        two_latents_video_frames = self.decode_latents(vae_warmup_2_latents, sliced_decode=False, keep_cache=True)
-        video_len = two_latents_video_frames.size(2)
-        
-        self.latents = all_latents[0]  # keep the first latents window for next generation
-        self.current_state = all_latents_pop[-1]  # the latent corresponding to the `current_frames`
-        self.current_frames = two_latents_video_frames[:, :, -int(video_len/2):]
-        self.current_pil_list = self.video_processor.postprocess_video(video=self.current_frames, output_type=self.decode_config.output_type)  # decode from video frames to PIL
-        self.current_pil_list = self.current_pil_list[0]
-        
-        return self.current_state, self.current_frames, self.current_pil_list
-    
-    @torch.no_grad()
-    def gym_step(self, action: str):
-        # 1. Generate
-        assert action in CONTROL_SIGNAL_TO_PROMPT.keys(), f"Invalid action: {action}. Valid actions are: {CONTROL_SIGNAL_TO_PROMPT.keys()}"
-        # Each step will generate num_noise_windows times, and take the last latent pop as the output
-        latents = self.latents.clone()
-        self.move_action_window(action, window_size=self.gen_step_config.window_size)
-        expanded_action_window = self.expand_action_window(window_size=self.gen_step_config.window_size, expand_factor=self.gen_step_config.num_noise_groups)
-        expanded_action_window_str = ",".join(expanded_action_window)
-        all_latents = []
-        all_latents_pop = []
-        for i in range(self.gen_step_config.num_noise_groups):
-            control_emb, control_indices = self.get_control_from_signal(expanded_action_window_str, i, i+self.gen_config.num_frames)
-            control_emb = control_emb.unsqueeze(0).to(self.gen_step_config.prompt_embeds.dtype).contiguous()
-            print("current control_indices: ", control_indices)
-            
-            if self.gen_config.do_classifier_free_guidance:
-                control_emb = torch.cat([control_emb, control_emb], dim=0)
-            
-            latents, latents_pop = self.generate_step(latents, control_emb, **vars(self.gen_step_config))
-            
-            all_latents.append(latents)
-            all_latents_pop.append(latents_pop)
-        
-        # 2. Update inner state
-        assert self.vae.decoder_cache is not None, "vae decoder cache should not be None"
-        vae_normal_1_latents = all_latents_pop[-1]  # the last latent --> the real video clip corresponding to the action
-        one_latents_video_frames = self.decode_latents(vae_normal_1_latents, sliced_decode=False, keep_cache=True)
-        
-        self.latents = all_latents[0]  # keep the first latents window for next generation
-        self.current_state = all_latents_pop[-1]  # the latent corresponding to the `current_frames`
-        self.current_frames = one_latents_video_frames
-        self.current_pil_list = self.video_processor.postprocess_video(video=self.current_frames, output_type=self.decode_config.output_type)  # decode from video frames to PIL
-        self.current_pil_list = self.current_pil_list[0]
-        
-        return self.current_state, self.current_frames, self.current_pil_list
-    
-    def gym_render(self, mode="pil"):
-        # single hidden state --> video frames (4 frames per latent)
-        if mode == "pil":
-            return self.current_pil_list
-        elif mode == "rgb":
-            return self.current_frames
-        else:
-            raise ValueError(f"Invalid mode: {mode}. Valid modes are: pil, rgb.")
-    
-    def gym_close(self):
-        # self.maybe_free_model_hooks()
-        pass

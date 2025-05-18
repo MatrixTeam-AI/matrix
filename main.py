@@ -264,7 +264,7 @@ def main():
     is_connected = False
     frame_counter = 0
     logger.info('Init: Starting')
-    init_messenger()
+    # init_messenger()
 
     # Backend: init model and start the video generation
     model, frame_queue, control_queue = init_model() # block

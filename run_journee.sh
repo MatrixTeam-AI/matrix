@@ -1,21 +1,23 @@
 #!/bin/bash
+ray stop
 python journee/utils/send_msg_to_logger.py --message "Start running run_journee.sh"
 
 NUM_GPUS_DIT=1
 NUM_GPUS_VAE=3
-MODEL_PATH="../models/stage3"
+MODEL_PATH="/home/andy/matrix_stage4_ckpt"
 
-# generate string "NUM_GPUS_DIT,...,NUM_GPUS_DIT+NUM_GPUS_VAE-1"
+generate string "NUM_GPUS_DIT,...,NUM_GPUS_DIT+NUM_GPUS_VAE-1"
 GPU_IDS=$NUM_GPUS_DIT
 for ((i=NUM_GPUS_DIT+1; i<NUM_GPUS_DIT+NUM_GPUS_VAE; i++)); do
   GPU_IDS="$GPU_IDS,$i"
 done
+
 python journee/utils/send_msg_to_logger.py --message "GPU_IDS: $GPU_IDS"
 
 # download model ckpts if needed
 python journee/utils/send_msg_to_logger.py --message "Download model weights..."
 # bash download_hf_models.sh
-bash download_models.sh
+# bash download_models.sh
 
 CUDA_VISIBLE_DEVICES=$GPU_IDS ray start --head
 sleep 10
