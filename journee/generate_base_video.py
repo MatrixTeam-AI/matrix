@@ -184,19 +184,9 @@ def generate_base_video(prompt, model_path, cache_dir):
         return video_path
 
 if __name__ == "__main__":
-    prompt_1 = "In a barren desert, a white SUV is driving. From an overhead panoramic shot, \
-              the vehicle has blue and red stripe decorations on its body, and there is a \
-              black spoiler at the rear. It is traversing through sand dunes and shrubs, \
-              kicking up a cloud of dust. In the distance, undulating mountains can be seen, \
-              with a sky of deep blue and a few white clouds floating by."
-    prompt_2 = "On a lush green meadow, a white car is driving. From an overhead panoramic shot, \
-             this car is adorned with blue and red stripes on its body, and it has a black spoiler at the rear. \
-             The camera follows the car as it moves through a field of golden wheat, surrounded by green grass and trees. \
-             In the distance, a river and some hills can be seen, with a cloudless blue sky above."
-    prompt_3 = "The video shows a white car driving on a country road on a sunny day. The car comes from \
-              the back of the scene, moving forward along the road, with open fields and distant hills \
-              surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. \
-              The entire video records the car's journey through the natural environment using a follow-shot technique."
+    prompt_1 = "In a barren desert, a white SUV is driving. From an overhead panoramic shot, the vehicle has blue and red stripe decorations on its body, and there is a black spoiler at the rear. It is traversing through sand dunes and shrubs, kicking up a cloud of dust. In the distance, undulating mountains can be seen, with a sky of deep blue and a few white clouds floating by."
+    prompt_2 = "On a lush green meadow, a white car is driving. From an overhead panoramic shot, this car is adorned with blue and red stripes on its body, and it has a black spoiler at the rear. The camera follows the car as it moves through a field of golden wheat, surrounded by green grass and trees. In the distance, a river and some hills can be seen, with a cloudless blue sky above."
+    prompt_3 = "The video shows a white car driving on a country road on a sunny day. The car comes from the back of the scene, moving forward along the road, with open fields and distant hills surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. The entire video records the car's journey through the natural environment using a follow-shot technique."
     example_prompts = [prompt_1, prompt_2, prompt_3]
     
     for prompt in example_prompts:
@@ -204,5 +194,3 @@ if __name__ == "__main__":
         cache_dir = os.path.join(repo_root_dir, "base_video_cache")
         model_path = os.path.join(repo_root_dir, "models/stage2")
         video_path = generate_base_video(prompt, model_path, cache_dir)
-    
-    

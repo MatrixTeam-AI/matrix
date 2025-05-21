@@ -1,6 +1,9 @@
+import sys
+import os
 import argparse
 import ray
-from utils.ray_pipeline_utils import QueueManager, SharedVar, SharedReadOnlyVar, timer
+sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
+from journee.utils.ray_pipeline_utils import QueueManager, SharedVar, SharedReadOnlyVar, timer
 
 def main():
     parser = argparse.ArgumentParser(description="Update the Ray variable.")
@@ -25,9 +28,9 @@ def main():
     args = parser.parse_args()
     # 1. Connect to an existing ray cluster
     ray.init(address='auto')  
-    var_pointer = ray.get_actor(parser.name, namespace=parser.name_space)
+    var_pointer = ray.get_actor(args.name, namespace=args.name_space)
     # 2. Update the Ray variable
-    ray.get(var_pointer.set.remote(parser.value)) 
+    ray.get(var_pointer.set.remote(args.value)) 
 
 
 if __name__ == "__main__":

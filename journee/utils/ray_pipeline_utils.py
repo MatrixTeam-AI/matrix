@@ -119,7 +119,7 @@ class QueueManager:
         self.queue = Queue(maxsize=maxsize)
 
     def put(self, item):
-        # print(f"[QueueManager] put() called")
+        print(f"[QueueManager] put() called")
         self.queue.put(item)
 
     def get(self):
@@ -144,7 +144,7 @@ class QueueManager:
         return self.queue.size()
 
 
-@ray.remote
+@ray.remote(num_cpus=1, max_concurrency=10)
 class SharedVar:
     def __init__(self, value=None):
         self.value = value
@@ -161,7 +161,7 @@ class SharedVar:
                 await self._condition.wait()
             return self.value
 
-@ray.remote
+@ray.remote(num_cpus=1, max_concurrency=10)
 class SharedReadOnlyVar:
     def __init__(self, value=None):
         self.value = value

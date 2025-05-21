@@ -10,24 +10,26 @@ from wmk.player import Player
 
 #============ Interfaces with the backend model ===========#
 #TODO: implement these interfaces and import them
-class DummyQueue:
-    def get(self): # block
-        return None
-    def put(self, control): # non-block
-        pass
-class DummyModel:
-    def start(self):
-        r"""Start video generation.
-        By default, if no control is given, the signal will be set to 'D'.
-        """
-        pass
-    def init_generation(self):
-        r"""prepare the warm-up video"""
-        pass
-def init_model():
-    return DummyModel(), DummyQueue(), DummyQueue() # model, frame_queue, control_queue
+# class DummyQueue:
+#     def get(self): # block
+#         return None
+#     def put(self, control): # non-block
+#         pass
+# class DummyModel:
+#     def start(self):
+#         r"""Start video generation.
+#         By default, if no control is given, the signal will be set to 'D'.
+#         """
+#         pass
+#     def init_generation(self):
+#         r"""prepare the warm-up video"""
+#         pass
+# def init_model():
+#     return DummyModel(), DummyQueue(), DummyQueue() # model, frame_queue, control_queue
 #============ Interfaces with the backend model ===========#
 from journee.interface import init_model, passed_times_dict_to_str
+import ray
+current_state_var = ray.get_actor(namespace='matrix', name="current_state")
 
 def random_control_signal_generator(
         seed, 
@@ -222,7 +224,6 @@ def generate_frames(player: Player, dt: float):
     a_key_pressed = pyglet.window.key.A in player.keys_pressed
     d_key_pressed = pyglet.window.key.D in player.keys_pressed
     w_key_pressed = pyglet.window.key.W in player.keys_pressed
-
     # Get control and update control queue
     # control = 'D'   # Default. Move forward even if no key is pressed.
     control = next(CONTROL_GENERATOR)
@@ -232,30 +233,26 @@ def generate_frames(player: Player, dt: float):
         control = 'DR'
     elif w_key_pressed:
         control = 'D'
-    control_manager.put(control, dt, check_full=False)    # non-blocking
+    # print(f"putting control signal {control} to the queue")
+    if ray.get(current_state_var.get.remote()) == "RUN":
+        control_manager.put(control, dt, check_full=False)    # non-blocking
     if frame_counter == 0:
         logger.info(f"[main.generate_frames] send control {control} @ {frame_counter=}")
-
+    # print("Waiting for frames")
     # Get the frame to display
-    frame = frame_manager.get(
-        dt,
-        if_wait_nonempty=True, # blocking
-    )
+    if ray.get(current_state_var.get.remote()) == "RUN":
+        frame = frame_manager.get(
+            dt,
+            if_wait_nonempty=True, # blocking
+        )
+    else:
+        frame = None
     if frame_counter == 0:
         logger.info(f"[main.generate_frames] get frame @ {frame_counter=}")
     
     # when no frame is available, we display a color frame
     if frame is None:
-        if a_key_pressed or d_key_pressed:
-            frame = GREEN_FRAME
-        elif w_key_pressed:
-            frame = WHITE_FRAME
-        elif is_connected:
-            frame = BLUE_FRAME
-        else:
-            frame = RED_FRAME
-            if frame_counter % DISPLAY_FPS / DISPLAY_FPS < 1 / 2:
-                frame = BLUE_FRAME
+        frame = BLUE_FRAME
     frame_counter += 1
     return frame
     

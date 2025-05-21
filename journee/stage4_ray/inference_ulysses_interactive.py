@@ -1,4 +1,13 @@
 # This file is modified from: https://github.com/xdit-project/xDiT/blob/main/examples/cogvideox_usp_example.py
+# ==============================================
+# import debugpy 
+# try:
+#     debugpy.listen(("localhost", 9501))
+#     print("Waiting for debugger to attach...")
+#     debugpy.wait_for_client()
+# except Exception as e:
+#     pass
+# ==============================================
 import os
 import sys
 sys.path.insert(0, '/'.join(os.path.realpath(__file__).split('/')[:-3]))
@@ -157,10 +166,10 @@ def remove_argument(parser, option_string):
 
 @torch.no_grad()
 def main():
-    deault_prompt = "The video shows a white car driving on a country road on a sunny day. The car comes from \
-              the back of the scene, moving forward along the road, with open fields and distant hills \
-              surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. \
-              The entire video records the car's journey through the natural environment using a follow-shot technique."
+    deault_prompt = ("The video shows a white car driving on a country road on a sunny day. The car comes from "
+              "the back of the scene, moving forward along the road, with open fields and distant hills "
+              "surrounding it. As the car moves, the vegetation on both sides of the road and distant buildings can be seen. "
+              "The entire video records the car's journey through the natural environment using a follow-shot technique.")
     parser = FlexibleArgumentParser(description="xFuser Arguments")
     parser = xFuserArgs.add_cli_args(parser)
     add_argument_overridable(parser, "--prompt", type=str, default=deault_prompt, help="The description of the video to be generated")
@@ -248,7 +257,7 @@ def main():
     torch.cuda.reset_peak_memory_stats()
     start_time = time.time()
     
-    pipe.start_interactive_loop(gen_config)
+    pipe.start_interactive_loop_(gen_config)
     
     end_time = time.time()
     elapsed_time = end_time - start_time

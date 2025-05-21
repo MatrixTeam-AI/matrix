@@ -1,10 +1,18 @@
 #!/bin/bash
+cleanup() {
+   echo "🧹 Cleaning up ray processes..."
+   ray stop
+   exit 0
+}
+
+trap cleanup SIGINT
+
 ray stop
 python journee/utils/send_msg_to_logger.py --message "Start running run_journee.sh"
 
 NUM_GPUS_DIT=1
 NUM_GPUS_VAE=3
-MODEL_PATH="/home/andy/matrix_stage4_ckpt"
+MODEL_PATH="../models/stage4"
 
 generate string "NUM_GPUS_DIT,...,NUM_GPUS_DIT+NUM_GPUS_VAE-1"
 GPU_IDS=$NUM_GPUS_DIT
@@ -31,7 +39,8 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd journee
 python utils/send_msg_to_logger.py --message "Running python create_ray_pipe.py..."
-python create_ray_pipe.py  &
+python create_ray_pipe.py &
+# python create_ray_pipe.py > ../create_ray_pipeline_output.log 2>&1 &  # for debugging
 # BACK_PID_0=$!
 python utils/send_msg_to_logger.py --message "Complete python create_ray_pipe.py"
 sleep 30
@@ -39,6 +48,7 @@ cd ..
 
 python journee/utils/send_msg_to_logger.py --message "Running python main.py"
 python main.py &
+# python main.py > main_output.log 2>&1 &  # for debugging
 # BACK_PID_3=$!
 
 cd journee
