@@ -40,7 +40,7 @@ Model checkpoints can be found in [Huggingface](https://huggingface.co/MatrixTea
 According to a request from Alibaba Tongyi Lab, the previous version of The Matrix was inherited from an internal version of Video DiT and could not be openly released. Therefore, we have re-implemented The Matrix code based on the previously open-released video generation model, [CogVideoX](https://github.com/THUDM/CogVideo/tree/main). We sincerely appreciate the efforts of the **CogVideo** team for their contributions.
 ### Implemented Features
 
-All planned components are now live, delivering real-time, infinite-horizon generation at **16 FPS** with near-zero latency:
+Most planned components are now live, delivering real-time, infinite-horizon generation at **16 FPS** with near-zero latency:
 
 - ✅ **8-GPU Parallel Inference for DiT & VAE**  
   Both the Diffusion Transformer (DiT) backbone and our VAE decoder run across 8 GPUs in parallel, yielding a **6–8× speedup** over single-GPU baselines.
