@@ -12,7 +12,7 @@ Download The Matrix model weights at <a href="https://huggingface.co/MatrixTeam/
     👋 Say Hi to our team and members at <a href="https://matrixteam-ai.github.io/" target="_blank">Matrix-Team</a>
 </p>
 <p align="center">
-📍 (Coming Soon) Explore The Matrix playground online at <a href="">Journee</a> to experience real-time AI generated world.
+📍 Explore The Matrix playground online at <a href="">Journee</a> to experience real-time AI generated world.
 </p>
 
 
@@ -38,14 +38,33 @@ Model checkpoints can be found in [Huggingface](https://huggingface.co/MatrixTea
 ## Important Updates
 
 According to a request from Alibaba Tongyi Lab, the previous version of The Matrix was inherited from an internal version of Video DiT and could not be openly released. Therefore, we have re-implemented The Matrix code based on the previously open-released video generation model, [CogVideoX](https://github.com/THUDM/CogVideo/tree/main). We sincerely appreciate the efforts of the **CogVideo** team for their contributions.
+### Implemented Features
 
-As a result, the open release of our model has been delayed, and some components are still under development. These components will be released as soon as they are finished, including:
+We have completed all planned components and now provide stream‐based, real-time control at **16 FPS** using a four-stage Ray‐powered pipeline:
 
-- [ ] Inference scripts for 8-GPU parallel inference of the DiT backbone, which will accelerate the inference speed by around 6-8 times.
+- ✅ **8-GPU parallel inference for the DiT backbone**  
+  Accelerates DiT inference by ~6–8×.
 
-- [ ] Training of the Stream Consistency Models, which will accelerate inference speed by around 7-10 times.
+- ✅ **Stream Consistency Models**  
+  Further boosts end-to-end inference speed by ~7–10×.
 
-- [ ] Training on fused realistic and simulated data to acquire stronger generalization ability.
+- ✅ **Fused realistic + simulated data training**  
+  Improves generalization across both real-world and simulated environments.
+
+### Real-time Streaming Pipeline
+
+Built on the **Ray** framework, our system runs four parallel “pipes”:
+
+1. **Action Receiver**  
+   Listens for incoming control signals in real time.  
+2. **DiT Latent Generator**  
+   Runs the Diffusion Transformer (DiT) to produce latent representations.  
+3. **VAR Pixel Mapper**  
+   Maps those latents back into RGB frames (via our Variational Autoencoder).  
+4. **Frontend Processor**  
+   Handles final data formatting and video multiplexing for display.
+
+Together, these stages sustain a continuous 16 FPS generation loop, enabling smooth, low-latency interactive control.  
 
 ## Reimplementation contributions
 The successful release of The Matrix Project is built upon the collective efforts of our incredibly talented team members. We extend our heartfelt gratitude for their dedication, hard work, and invaluable contributions. Those members are:
