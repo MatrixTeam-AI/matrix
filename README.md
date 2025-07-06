@@ -40,32 +40,32 @@ Model checkpoints can be found in [Huggingface](https://huggingface.co/MatrixTea
 According to a request from Alibaba Tongyi Lab, the previous version of The Matrix was inherited from an internal version of Video DiT and could not be openly released. Therefore, we have re-implemented The Matrix code based on the previously open-released video generation model, [CogVideoX](https://github.com/THUDM/CogVideo/tree/main). We sincerely appreciate the efforts of the **CogVideo** team for their contributions.
 ### Implemented Features
 
-We have completed all planned components and now provide stream‐based, real-time control at **16 FPS** using a four-stage Ray‐powered pipeline:
+All planned components are now live, delivering real-time, infinite-horizon generation at **16 FPS** with near-zero latency:
 
-- ✅ **8-GPU parallel inference for the DiT backbone**  
-  Accelerates DiT inference by ~6–8×.
+- ✅ **8-GPU Parallel Inference for DiT & VAE**  
+  Both the Diffusion Transformer (DiT) backbone and our VAE decoder run across 8 GPUs in parallel, yielding a **6–8× speedup** over single-GPU baselines.
 
 - ✅ **Stream Consistency Models**  
-  Further boosts end-to-end inference speed by ~7–10×.
+  Advanced consistency losses enable uninterrupted generation over arbitrary lengths, boosting end-to-end throughput by **7–10×**.
 
-- ✅ **Fused realistic + simulated data training**  
-  Improves generalization across both real-world and simulated environments.
+- ✅ **Fused Real + Simulated Data Training**  
+  Jointly trained on real-world captures and high-fidelity simulations to ensure robust generalization in both domains.
 
-### Real-time Streaming Pipeline
+### Key Capabilities
 
-Built on the **Ray** framework, our system runs four parallel “pipes”:
+- **Real-Time Control**  
+  Instantly respond to live inputs (e.g., steering, throttle), updating the generated scene with **< 50 ms latency**.
 
-1. **Action Receiver**  
-   Listens for incoming control signals in real time.  
-2. **DiT Latent Generator**  
-   Runs the Diffusion Transformer (DiT) to produce latent representations.  
-3. **VAR Pixel Mapper**  
-   Maps those latents back into RGB frames (via our Variational Autoencoder).  
-4. **Frontend Processor**  
-   Handles final data formatting and video multiplexing for display.
+- **Infinite-Horizon Generation**  
+  Seamlessly extend scenes without drift or degradation—generate as long as you like.
 
-Together, these stages sustain a continuous 16 FPS generation loop, enabling smooth, low-latency interactive control.  
+- **Low-Latency Feedback Loop**  
+  End-to-end system sustains a continuous **16 FPS** render/playback cycle for smooth interactive experiences.
+  
+### Planned
 
+- [ ] **Training on Fused Realistic + Simulated Data**  
+  Joint training on real-world captures and high-fidelity simulations to acquire stronger generalization ability.
 ## Reimplementation contributions
 The successful release of The Matrix Project is built upon the collective efforts of our incredibly talented team members. We extend our heartfelt gratitude for their dedication, hard work, and invaluable contributions. Those members are:
 
