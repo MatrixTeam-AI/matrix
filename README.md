@@ -51,7 +51,7 @@ Most planned components are now live, delivering real-time, infinite-horizon gen
 ### Key Capabilities
 
 - **Real-Time Control**  
-  Instantly respond to live inputs (e.g., steering, throttle), updating the generated scene with **< 50 ms latency**.
+  Instantly respond to live inputs (e.g., steering, throttle), updating the generated scene in **< real time**.
 
 - **Infinite-Horizon Generation**  
   Seamlessly extend scenes without drift or degradation—generate as long as you like.
