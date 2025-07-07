@@ -48,9 +48,6 @@ Most planned components are now live, delivering real-time, infinite-horizon gen
 - ✅ **Stream Consistency Models**  
   Advanced consistency losses enable uninterrupted generation over arbitrary lengths, boosting end-to-end throughput by **7–10×**.
 
-- ✅ **Fused Real + Simulated Data Training**  
-  Jointly trained on real-world captures and high-fidelity simulations to ensure robust generalization in both domains.
-
 ### Key Capabilities
 
 - **Real-Time Control**  
