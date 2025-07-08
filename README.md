@@ -6,6 +6,9 @@
 Download The Matrix model weights at <a href="https://huggingface.co/MatrixTeam/TheMatrix" target="_blank"> 🤗 Huggingface</a> or <a href="https://www.modelscope.cn/models/AiurRuili/TheMatrix" target="_blank"> 🤖 ModelScope</a>
 </p>
 <p align="center">
+Download The Matrix Dataset at <a href="https://huggingface.co" target="_blank"> 🤗 Huggingface</a> or <a href="https://www.modelscope.cn/datasets/TheMatrixDataset/the_matrix_dataset_8M_1920_1080" target="_blank"> 🤖 ModelScope</a>
+</p>
+<p align="center">
 📚 View the <a href="https://arxiv.org/abs/2412.03568" target="_blank">Paper</a>, <a href="https://matrixteam-ai.github.io/pages/TheMatrix/" target="_blank"> Website, and <a href="http://matrixteam-ai.github.io/docs/TheMatrixDocs" target="_blank">Documentation</a>
 </p>
 <p align="center">
@@ -13,6 +16,9 @@ Download The Matrix model weights at <a href="https://huggingface.co/MatrixTeam/
 </p>
 <p align="center">
 📍 Explore The Matrix playground online at <a href="">Journee</a> to experience real-time AI generated world.
+</p>
+<p align="center">
+  Real-Time Inference Tech Report: <a href="coming-soon.html" target="_blank">Coming Soon</a>
 </p>
 
 
@@ -59,10 +65,31 @@ Most planned components are now live, delivering real-time, infinite-horizon gen
 - **Low-Latency Feedback Loop**  
   End-to-end system sustains a continuous **16 FPS** render/playback cycle for smooth interactive experiences.
   
+### Known Issues
+
+- **Latency bottlenecks**  
+   End-to-end inference sometimes falls below real-time requirements under heavy load.
+
+- **Color degradation on long straight segments**  
+   Sustained straight driving causes gradual visual drift; sharp turns temporarily correct colors.
+
+- **Global consistency drift**  
+   Over extended horizons, scene coherence can degrade (e.g., object placement, lighting).
+
 ### Planned
 
 - [ ] **Training on Fused Realistic + Simulated Data**  
   Joint training on real-world captures and high-fidelity simulations to acquire stronger generalization ability.
+
+- [ ] **Latency optimization**  
+  Profiling and kernel fusion to further reduce end-to-end inference time.
+
+- [ ] **Color stability enhancement**  
+  Incorporate temporal color correction modules to prevent degradation on straight paths.
+
+- [ ] **Global consistency models**  
+  Develop long-range consistency losses and memory mechanisms to maintain scene coherence indefinitely.
+
 ## Reimplementation contributions
 The successful release of The Matrix Project is built upon the collective efforts of our incredibly talented team members. We extend our heartfelt gratitude for their dedication, hard work, and invaluable contributions. Those members are:
 
