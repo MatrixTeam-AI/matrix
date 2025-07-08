@@ -65,6 +65,14 @@ Most planned components are now live, delivering real-time, infinite-horizon gen
 - **Low-Latency Feedback Loop**  
   End-to-end system sustains a continuous **16 FPS** render/playback cycle for smooth interactive experiences.
   
+### Latency
+
+| GPU Type | Latency |
+|----------|---------|
+| A100     | 0.5 s   |
+| H100     |   -     |
+| L40      |   -     |
+
 ### Known Issues
 
 - **Latency bottlenecks**  
