@@ -67,11 +67,13 @@ Most planned components are now live, delivering real-time, infinite-horizon gen
   
 ### Latency
 
-| GPU Type | Latency |
-|----------|---------|
-| A100     | 0.5 s   |
-| H100     |   -     |
-| L40      |   -     |
+| GPU Type | Latency | VAEnum | DiTnum |
+|----------|---------|--------|--------|
+| A100     | 0.6 s   |    3   |    5   |
+| A900     | 0.6 s   |    3   |    5   |
+| L40      | 1.2 s   |    1   |    3   |
+| H100     |   -     |    -   |    -   |
+
 
 ### Known Issues
 
