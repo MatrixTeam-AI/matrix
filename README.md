@@ -1,4 +1,4 @@
-# The Matrix (Preview)
+# The Matrix 
 <div align="center">
 <img src=readme_src/white-logo.svg width="50%"/>
 </div>
@@ -20,6 +20,42 @@ Download The Matrix Dataset at <a href="https://huggingface.co" target="_blank">
 <p align="center">
   Real-Time Inference Tech Report: <a href="coming-soon.html" target="_blank">Coming Soon</a>
 </p>
+
+<h2 align="center">🌍 Global Adoption &amp; Acknowledgements</h2>
+
+<p align="center">
+  The <strong>Matrix&nbsp;Dataset</strong> has already been cited, tested, or deployed by the following research labs and industry teams.<br/>
+  Thank you for advancing open, multimodal research together!
+</p>
+
+<div align="center">
+  <table style="border-collapse:collapse;font-size:90%;line-height:1.4em;">
+    <tr>
+      <td align="center">🧪<br/>Dynamics&nbsp;Lab</td>
+      <td align="center">🏫<br/>UC&nbsp;San&nbsp;Diego</td>
+      <td align="center">🏫<br/>University&nbsp;of&nbsp;Waterloo</td>
+      <td align="center">🏢<br/>Microsoft&nbsp;Research</td>
+    </tr>
+    <tr>
+      <td align="center">🏢<br/>ByteDance</td>
+      <td align="center">🏢<br/>Alibaba</td>
+      <td align="center">🏢<br/>Tencent</td>
+      <td align="center">🤖<br/>Duality&nbsp;AI</td>
+    </tr>
+    <tr>
+      <td align="center">💻<br/>AMD&nbsp;AI&nbsp;Group</td>
+      <td align="center">🕹️<br/>Journee</td>
+      <td align="center">🏫<br/>University&nbsp;of&nbsp;Hong&nbsp;Kong</td>
+      <td align="center">🏫<br/>Nanyang&nbsp;Technological&nbsp;University</td>
+    </tr>
+    <tr>
+      <td align="center">🏫<br/>Vector&nbsp;Institute</td>
+      <td align="center">🏫<br/>Hong&nbsp;Kong&nbsp;UST</td>
+      <td align="center">🏫<br/>Tsinghua&nbsp;University</td>
+      <td align="center">✨<br/>…and&nbsp;growing!</td>
+    </tr>
+  </table>
+</div>
 
 
 ---
