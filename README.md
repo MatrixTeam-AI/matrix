@@ -33,8 +33,7 @@ Download The Matrix Dataset at <a href="https://huggingface.co" target="_blank">
     <!-- Row 1 ------------------------------------------------------------->
     <tr>
       <td align="center">
-          <!-- Dynamics Lab – X.com avatar (400×400 PNG) -->
-          <img src="https://pbs.twimg.com/profile_images/1741018698497779712/fxqDQWXL_400x400.png"
+          <img src="readme_src/dynamics_lab_ai_logo.jpeg"
                alt="Dynamics Lab" width="120" style="margin-bottom:4px;"><br/>Dynamics&nbsp;Lab
         </td>
       <td align="center">
