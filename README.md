@@ -30,28 +30,97 @@ Download The Matrix Dataset at <a href="https://huggingface.co" target="_blank">
 
 <div align="center">
   <table style="border-collapse:collapse;font-size:90%;line-height:1.4em;">
+    <!-- Row 1 ------------------------------------------------------------->
     <tr>
-      <td align="center">🧪<br/>Dynamics&nbsp;Lab</td>
-      <td align="center">🏫<br/>UC&nbsp;San&nbsp;Diego</td>
-      <td align="center">🏫<br/>University&nbsp;of&nbsp;Waterloo</td>
-      <td align="center">🏢<br/>Microsoft&nbsp;Research</td>
+      <td align="center">
+          <!-- Dynamics Lab – X.com avatar (400×400 PNG) -->
+          <img src="https://pbs.twimg.com/profile_images/1741018698497779712/fxqDQWXL_400x400.png"
+               alt="Dynamics Lab" width="120" style="margin-bottom:4px;"><br/>Dynamics&nbsp;Lab
+        </td>
+      <td align="center">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/c/cc/University_of_California%2C_San_Diego_logo.svg/320px-University_of_California%2C_San_Diego_logo.svg.png"
+             alt="UC San Diego" width="120" style="margin-bottom:4px;"><br/>
+<!--           UC&nbsp;San&nbsp;Diego -->
+      </td>
+      <td align="center">
+          <img src="https://upload.wikimedia.org/wikipedia/commons/b/b9/University_of_Waterloo_logo.png"
+             alt="University of Waterloo" width="120" style="margin-bottom:4px;"><br/>
+<!--           University&nbsp;of&nbsp;Waterloo -->
+      </td>
+        <td align="center">
+          <!-- Microsoft – 700 × 394 px 透明 PNG，来自 Logos-world 官方资料页 -->
+          <img src="https://logos-world.net/wp-content/uploads/2020/09/Microsoft-Logo-700x394.png"
+               alt="Microsoft Research" width="120" style="margin-bottom:4px;"><br/>
+<!--             Microsoft&nbsp;Research -->
+        </td>
     </tr>
+    <!-- Row 2 ------------------------------------------------------------->
     <tr>
-      <td align="center">🏢<br/>ByteDance</td>
-      <td align="center">🏢<br/>Alibaba</td>
-      <td align="center">🏢<br/>Tencent</td>
-      <td align="center">🤖<br/>Duality&nbsp;AI</td>
+      <td align="center">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/0/07/ByteDance_logo_English.svg"
+             alt="ByteDance" width="120" style="margin-bottom:4px;"><br/>
+<!--           ByteDance -->
+      </td>
+      <td align="center">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Alibaba_en_logo.svg/330px-Alibaba_en_logo.svg.png"
+           alt="Alibaba" width="120" style="margin-bottom:4px;"><br/>
+<!--           Alibaba -->
+        </td>
+      <td align="center">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/2/22/Tencent_Logo.svg/330px-Tencent_Logo.svg.png"
+           alt="Tencent" width="120" style="margin-bottom:4px;"><br/>
+<!--           Tencent -->
+    </td>
+      <td align="center">
+        <img src="https://cdn.prod.website-files.com/64c93acfe8013a5bd4ea8232/64dfbb5b028cd65bdd1b0932_logo-light.svg"
+             alt="Duality AI" width="120" style="margin-bottom:4px;"><br/>
+<!--           Duality&nbsp;AI -->
+      </td>
     </tr>
+    <!-- Row 3 ------------------------------------------------------------->
     <tr>
-      <td align="center">💻<br/>AMD&nbsp;AI&nbsp;Group</td>
-      <td align="center">🕹️<br/>Journee</td>
-      <td align="center">🏫<br/>University&nbsp;of&nbsp;Hong&nbsp;Kong</td>
-      <td align="center">🏫<br/>Nanyang&nbsp;Technological&nbsp;University</td>
+     <td align="center">
+      <img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/7c/AMD_Logo.svg/330px-AMD_Logo.svg.png"
+           alt="AMD AI Group" width="120" style="margin-bottom:4px;"><br/>
+<!--          AMD&nbsp;AI&nbsp;Group -->
+    </td>
+      <td align="center">
+          <!-- Journee – GitHub org avatar, 200×200 PNG -->
+          <img src="https://avatars.githubusercontent.com/u/71011197?s=200&v=4"
+               alt="Journee" width="120" style="margin-bottom:4px;"><br/>
+<!--           Journee -->
+        </td>
+      <td align="center">
+          <!-- University of Hong Kong – SVG served by CDNLogo -->
+          <img src="https://static.cdnlogo.com/logos/u/80/university-of-hong-kong.svg"
+               alt="University of Hong Kong" width="120" style="margin-bottom:4px;"><br/>
+<!--           University&nbsp;of&nbsp;Hong&nbsp;Kong -->
+        </td>
+      <td align="center">
+        <img src="https://static.cdnlogo.com/logos/n/47/ntu-sg.svg"
+             alt="Nanyang Technological University" width="120" style="margin-bottom:4px;"><br/>
+<!--           Nanyang&nbsp;Technological&nbsp;University -->
+      </td>
     </tr>
+    <!-- Row 4 ------------------------------------------------------------->
     <tr>
-      <td align="center">🏫<br/>Vector&nbsp;Institute</td>
-      <td align="center">🏫<br/>Hong&nbsp;Kong&nbsp;UST</td>
-      <td align="center">🏫<br/>Tsinghua&nbsp;University</td>
+      <td align="center">
+          <!-- Vector Institute – official horizontal logo, 1184 × 435 px PNG -->
+          <img src="https://vectorinstitute.ai/wp-content/uploads/2024/05/Vector-Logo-FullColour_Horizontal.png"
+               alt="Vector Institute" width="120" style="margin-bottom:4px;"><br/>
+<!--           Vector&nbsp;Institute -->
+        </td>
+      <td align="center">
+          <!-- HKUST — transparent PNG from Logo.wine -->
+          <img src="https://download.logo.wine/logo/Hong_Kong_University_of_Science_and_Technology/Hong_Kong_University_of_Science_and_Technology-Logo.wine.png"
+               alt="Hong Kong UST" width="120" style="margin-bottom:4px;"><br/>
+<!--           Hong&nbsp;Kong&nbsp;UST -->
+        </td>
+      <td align="center">
+        <img src="https://upload.wikimedia.org/wikipedia/commons/e/ec/Tsinghua_University_Logo.svg"
+             alt="Tsinghua University" width="120" style="margin-bottom:4px;"><br/>
+<!--           Tsinghua&nbsp;University -->
+      </td>
       <td align="center">✨<br/>…and&nbsp;growing!</td>
     </tr>
   </table>
