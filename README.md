@@ -6,7 +6,7 @@
 Download The Matrix model weights at <a href="https://huggingface.co/MatrixTeam/TheMatrix" target="_blank"> 🤗 Huggingface</a> or <a href="https://www.modelscope.cn/models/AiurRuili/TheMatrix" target="_blank"> 🤖 ModelScope</a>
 </p>
 <p align="center">
-Download The Matrix Dataset at <a href="https://huggingface.co" target="_blank"> 🤗 Huggingface</a> or <a href="https://www.modelscope.cn/datasets/TheMatrixDataset/the_matrix_dataset_8M_1920_1080" target="_blank"> 🤖 ModelScope</a>
+Download The Matrix Dataset at <a href="https://huggingface.co](https://huggingface.co/datasets/ztyang196/the_matrix_dataset_8M_1920_1080" target="_blank"> 🤗 Huggingface</a> or <a href="https://www.modelscope.cn/datasets/TheMatrixDataset/the_matrix_dataset_8M_1920_1080" target="_blank"> 🤖 ModelScope</a>
 </p>
 <p align="center">
 📚 View the <a href="https://arxiv.org/abs/2412.03568" target="_blank">Paper</a>, <a href="https://matrixteam-ai.github.io/pages/TheMatrix/" target="_blank"> Website, and <a href="http://matrixteam-ai.github.io/docs/TheMatrixDocs" target="_blank">Documentation</a>
